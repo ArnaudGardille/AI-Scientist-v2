@@ -185,6 +185,12 @@ predictions, counterexamples, a rejection rule, and a material distinction from 
 methods. These conceptual reviews are provenance and promotion gates only; they never
 replace frozen numeric evaluation.
 
+Promotable records enter a diversity-aware Pareto archive rather than being collapsed to
+one LLM score. Soundness, robustness, novelty, expected information gain, and feasibility
+remain separate objectives. Near-duplicate mechanisms are removed, each conceptual family
+has a capacity quota, and UCB expansion periodically allocates budget to less-visited
+non-dominated branches. Numeric benchmark results are attached only after execution.
+
 ## Citing The AI Scientist-v2
 
 If you use **The AI Scientist-v2** in your research, please cite our work as follows:
