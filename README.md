@@ -191,6 +191,14 @@ remain separate objectives. Near-duplicate mechanisms are removed, each conceptu
 has a capacity quota, and UCB expansion periodically allocates budget to less-visited
 non-dominated branches. Numeric benchmark results are attached only after execution.
 
+`launch_hierarchical_campaign.py` connects those layers end to end. It generates and
+reviews hypotheses, builds a diverse conceptual frontier, asks the method designer for a
+validated multi-file candidate package, evaluates it through frozen staged benchmarks,
+and revises multiple families with BFTS/UCB. Every node stores its hypothesis, provenance,
+candidate files, and exact evaluator JSON. Use the same constrained JSON configuration as
+the external benchmark, with a directory-valued `candidate_path`, a `shared_python`, and a
+`campaign` section for conceptual/frontier budgets.
+
 ## Citing The AI Scientist-v2
 
 If you use **The AI Scientist-v2** in your research, please cite our work as follows:
