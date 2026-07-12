@@ -156,6 +156,27 @@ Once the initial experimental stage is complete, you will find a timestamped log
 After all experiment stages are complete, the writeup stage begins. The writeup stage typically takes about 20 to 30 minutes in total. Once it finishes, you should see `timestamp_ideaname.pdf` in the `timestamp_ideaname` folder.
 For this example run, all stages typically finish within several hours.
 
+### Constrained external benchmarks
+
+For repositories that already define a trusted numeric benchmark, use
+`launch_constrained_bfts.py`. This mode lets the model replace one candidate file while
+running every node in a disposable Git worktree. Frozen paths are hashed before and after
+evaluation, and only evaluator-produced JSON scores guide best-first search.
+
+```bash
+python launch_constrained_bfts.py \
+  --config examples/constrained_marl.json \
+  --model claude-code/sonnet
+```
+
+The example promotes candidates from a cheap Bellman-operator benchmark to a paired-seed
+MARL learning benchmark. Adapt absolute repository/output paths before use. Run this mode
+inside a sandbox too: model-generated Python is still executed. The
+`claude-code/<model>` backend invokes the locally authenticated Claude Code CLI, disables
+its tools, and requests schema-validated JSON. This supports a Claude Code subscription
+without treating it as an Anthropic API key; the frozen evaluator remains responsible for
+all code execution and scoring.
+
 ## Citing The AI Scientist-v2
 
 If you use **The AI Scientist-v2** in your research, please cite our work as follows:

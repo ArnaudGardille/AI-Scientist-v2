@@ -1,0 +1,33 @@
+{
+  "repository": "/Users/arnaud/Development/report-offline-marl-stability--research-screening-benchmark",
+  "base_ref": "research-screening-benchmark",
+  "candidate_path": "code/conformal_marl/autoresearch/candidate.py",
+  "working_subdir": "code",
+  "frozen_paths": [
+    "code/conformal_marl/autoresearch/api.py",
+    "code/conformal_marl/autoresearch/frozen",
+    "code/conformal_marl/autoresearch/evaluate.py",
+    "code/conformal_marl/envs",
+    "code/conformal_marl/iql.py",
+    "code/conformal_marl/samplers.py",
+    "code/tests/test_autoresearch_operator.py",
+    "code/tests/test_autoresearch_learning.py"
+  ],
+  "stages": [
+    {
+      "name": "operator",
+      "command": ["uv", "run", "python", "-m", "conformal_marl.autoresearch.evaluate", "--tier", "operator", "--trials", "128", "--output", "{output}"],
+      "minimum_score": -0.25
+    },
+    {
+      "name": "learning",
+      "command": ["uv", "run", "python", "-m", "conformal_marl.autoresearch.evaluate", "--tier", "learning", "--num-seeds", "8", "--output", "{output}"],
+      "required_status": "ok"
+    }
+  ],
+  "task_context_file": "examples/constrained_marl_task.md",
+  "output_dir": "experiments/constrained_marl",
+  "branching_factor": 3,
+  "max_nodes": 12,
+  "timeout_seconds": 3600
+}
