@@ -38,7 +38,9 @@ def _evaluator(raw: dict, stages: tuple[EvaluationStage, ...]) -> WorktreeBundle
         frozen_paths=tuple(Path(path) for path in raw["frozen_paths"]),
         stages=stages,
         timeout_seconds=raw.get("timeout_seconds", 3600),
-        shared_python=Path(raw["shared_python"]).resolve() if raw.get("shared_python") else None,
+        # Do not resolve the virtualenv's Python symlink: its original path is how
+        # CPython discovers pyvenv.cfg and the environment's site-packages.
+        shared_python=Path(raw["shared_python"]).absolute() if raw.get("shared_python") else None,
     ))
 
 
