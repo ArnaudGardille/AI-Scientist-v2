@@ -36,10 +36,12 @@ class FakeImplementationModel:
 class FakeEvaluator:
     def __init__(self):
         self.calls = 0
+        self.stage_inputs = []
 
-    def evaluate(self, bundle):
+    def evaluate(self, bundle, stage_inputs=None):
         bundle.validate()
         self.calls += 1
+        self.stage_inputs.append(stage_inputs)
         return BundleEvaluation(
             status="ok",
             stage_results={"learning": {"status": "ok", "primary_score": self.calls / 10}},
@@ -52,7 +54,8 @@ class FakeFinalEvaluator:
     def __init__(self):
         self.calls = 0
 
-    def evaluate(self, bundle):
+    def evaluate(self, bundle, stage_inputs=None):
+        self.assert_no_inputs(stage_inputs)
         bundle.validate()
         self.calls += 1
         return BundleEvaluation(
@@ -61,6 +64,11 @@ class FakeFinalEvaluator:
             passed_stages=1,
             complete=True,
         )
+
+    @staticmethod
+    def assert_no_inputs(stage_inputs):
+        if stage_inputs is not None:
+            raise AssertionError("held-out evaluator received search experiment inputs")
 
 
 class HierarchicalCampaignTest(unittest.TestCase):
@@ -91,6 +99,9 @@ class HierarchicalCampaignTest(unittest.TestCase):
             self.assertTrue(best.evaluation.complete)
             self.assertIsNotNone(best.final_evaluation)
             self.assertEqual(final_evaluator.calls, 2)
+            self.assertTrue(all(
+                inputs and "mechanism" in inputs for inputs in evaluator.stage_inputs
+            ))
             self.assertTrue((Path(tmp) / "journal.json").is_file())
             self.assertTrue((Path(tmp) / "node_0000" / "candidate" / "sampler.py").is_file())
             self.assertTrue(any(

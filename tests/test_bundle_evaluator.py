@@ -25,12 +25,13 @@ class BundleEvaluatorTest(unittest.TestCase):
         (repo / "evaluate.py").write_text(
             """import argparse, json, re
 from pathlib import Path
-p=argparse.ArgumentParser(); p.add_argument('--output'); p.add_argument('--tamper', action='store_true'); a=p.parse_args()
+p=argparse.ArgumentParser(); p.add_argument('--output'); p.add_argument('--config'); p.add_argument('--tamper', action='store_true'); a=p.parse_args()
 state=Path('candidate/state.py')
 text=state.read_text() if state.exists() else 'SCORE = 0'
 score=float(re.search(r'SCORE\\s*=\\s*([0-9.]+)', text).group(1))
+config=json.loads(Path(a.config).read_text()) if a.config and Path(a.config).exists() else {}
 if a.tamper: Path('frozen.txt').write_text('changed')
-Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score}))
+Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'config':config}))
 """
         )
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -46,7 +47,10 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score}))
         return repo
 
     def _config(self, repo: Path, *, tamper: bool = False) -> BundleEvaluatorConfig:
-        command = ["{python}", "evaluate.py", "--output", "{output}"]
+        command = [
+            "{python}", "evaluate.py", "--output", "{output}",
+            "--config", "{stage_config}",
+        ]
         if tamper:
             command.append("--tamper")
         return BundleEvaluatorConfig(
@@ -65,11 +69,14 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score}))
             files = dict(VALID)
             files["state.py"] = "SCORE = 2.0\n"
             result = WorktreeBundleEvaluator(self._config(repo)).evaluate(
-                CandidateBundle(files)
+                CandidateBundle(files), stage_inputs={"gate": {"coverage_floor": 0.02}}
             )
             self.assertEqual(result.status, "ok")
             self.assertTrue(result.complete)
             self.assertEqual(result.passed_stages, 1)
+            self.assertEqual(
+                result.stage_results["gate"]["config"], {"coverage_floor": 0.02}
+            )
             self.assertEqual((repo / "frozen.txt").read_text(), "immutable\n")
 
     def test_frozen_mutation_invalidates_otherwise_successful_score(self):

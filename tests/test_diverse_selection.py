@@ -58,6 +58,14 @@ def record(title: str, family: str, mechanism: str) -> ResearchRecord:
             "Reject when the paired confidence interval fails to show positive improvement.",
             "operator",
             ("unequal sample count", "different random seeds"),
+            {
+                "action_counts": [2, 4],
+                "sample_sizes": [128],
+                "shift_strengths": [0.0, 0.9],
+                "noise_levels": [0.1],
+                "coverage_floor": 0.02,
+                "scenario_seed": 7,
+            },
         ),
         novelty=NoveltyReview(
             ("importance sampling",),

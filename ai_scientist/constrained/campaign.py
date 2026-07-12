@@ -33,7 +33,9 @@ IMPLEMENTATION_SCHEMA = {
 
 
 class BundleEvaluator(Protocol):
-    def evaluate(self, bundle: CandidateBundle) -> BundleEvaluation: ...
+    def evaluate(
+        self, bundle: CandidateBundle, stage_inputs: dict[str, dict] | None = None
+    ) -> BundleEvaluation: ...
 
 
 @dataclass(frozen=True)
@@ -136,7 +138,10 @@ class HierarchicalCampaign:
     def _evaluate_node(
         self, record: ResearchRecord, bundle: CandidateBundle, parent_id: int | None, rationale: str
     ) -> CampaignNode:
-        evaluation = self.evaluator.evaluate(bundle)
+        evaluation = self.evaluator.evaluate(
+            bundle,
+            stage_inputs={"mechanism": record.experiment.mechanism_config},
+        )
         record.phase = ResearchPhase.VALIDATION if evaluation.complete else ResearchPhase.SCREENING
         record.empirical_results = evaluation.stage_results
         node = CampaignNode(
@@ -216,6 +221,7 @@ class HierarchicalCampaign:
             if len(finalists) == self.config.finalist_count:
                 break
         for node in finalists:
+            # Held-out validation deliberately ignores agent-designed experiment inputs.
             node.final_evaluation = self.final_evaluator.evaluate(node.bundle)
             self._save_node(node)
 

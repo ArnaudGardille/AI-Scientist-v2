@@ -48,6 +48,14 @@ class FakeStructuredModel:
                 "rejection_rule": "Reject if the paired 95 percent upper bound on MSE improvement is non-positive.",
                 "budget_class": "operator",
                 "confounds": ["unequal sample count", "target support mismatch"],
+                "mechanism_config": {
+                    "action_counts": [2, 4, 8],
+                    "sample_sizes": [128, 512],
+                    "shift_strengths": [0.0, 0.5, 0.9],
+                    "noise_levels": [0.1, 0.75],
+                    "coverage_floor": 0.02,
+                    "scenario_seed": 7,
+                },
             }
         if role == "novelty-reviewer":
             return {
