@@ -44,11 +44,12 @@ class CampaignConfig:
     revisions_per_expansion: int = 2
     max_per_family: int = 2
     min_conceptual_distance: float = 0.2
+    finalist_count: int = 2
 
     def validate(self) -> None:
         if self.initial_capacity < 1 or self.max_nodes < self.initial_capacity:
             raise ValueError("invalid campaign node budget")
-        if self.revisions_per_expansion < 1 or self.max_per_family < 1:
+        if self.revisions_per_expansion < 1 or self.max_per_family < 1 or self.finalist_count < 1:
             raise ValueError("invalid campaign branching parameters")
 
 
@@ -60,6 +61,7 @@ class CampaignNode:
     bundle: CandidateBundle
     evaluation: BundleEvaluation
     revision_rationale: str = ""
+    final_evaluation: BundleEvaluation | None = None
 
 
 class HierarchicalCampaign:
@@ -69,12 +71,14 @@ class HierarchicalCampaign:
         council: ResearchCouncil,
         implementation_model: StructuredModel,
         evaluator: BundleEvaluator,
+        final_evaluator: BundleEvaluator | None,
         config: CampaignConfig,
     ) -> None:
         config.validate()
         self.council = council
         self.model = implementation_model
         self.evaluator = evaluator
+        self.final_evaluator = final_evaluator
         self.config = config
         self.archive = DiverseParetoArchive(
             min_distance=config.min_conceptual_distance,
@@ -156,6 +160,11 @@ class HierarchicalCampaign:
         (directory / "evaluation.json").write_text(
             json.dumps(asdict(node.evaluation), indent=2, sort_keys=True), encoding="utf-8"
         )
+        if node.final_evaluation is not None:
+            (directory / "final_evaluation.json").write_text(
+                json.dumps(asdict(node.final_evaluation), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
         node.bundle.materialize(directory / "candidate")
 
     def _save_journal(self) -> None:
@@ -171,6 +180,9 @@ class HierarchicalCampaign:
                     "family": node.record.hypothesis.family,
                     "status": node.evaluation.status,
                     "priority": node.evaluation.priority(),
+                    "final_priority": (
+                        node.final_evaluation.priority() if node.final_evaluation else None
+                    ),
                 }
                 for node in self.nodes
             ],
@@ -180,7 +192,32 @@ class HierarchicalCampaign:
         )
 
     def best_node(self) -> CampaignNode | None:
+        validated = [node for node in self.nodes if node.final_evaluation is not None]
+        if validated:
+            return max(validated, key=lambda node: node.final_evaluation.priority())
         return max(self.nodes, key=lambda node: node.evaluation.priority(), default=None)
+
+    def _validate_finalists(self) -> None:
+        if self.final_evaluator is None:
+            return
+        eligible = sorted(
+            (node for node in self.nodes if node.evaluation.complete),
+            key=lambda node: node.evaluation.priority(),
+            reverse=True,
+        )
+        seen_bundles = set()
+        finalists = []
+        for node in eligible:
+            fingerprint = json.dumps(node.bundle.files, sort_keys=True)
+            if fingerprint in seen_bundles:
+                continue
+            seen_bundles.add(fingerprint)
+            finalists.append(node)
+            if len(finalists) == self.config.finalist_count:
+                break
+        for node in finalists:
+            node.final_evaluation = self.final_evaluator.evaluate(node.bundle)
+            self._save_node(node)
 
     def run(
         self,
@@ -222,5 +259,6 @@ class HierarchicalCampaign:
                     parent.evaluation.priority() / 1000.0
                 )
             self._save_journal()
+        self._validate_finalists()
         self._save_journal()
         return self.best_node()
