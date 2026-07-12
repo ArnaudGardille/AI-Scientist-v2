@@ -13,7 +13,7 @@ from ai_scientist.constrained.search import ConstrainedBFTS, EvaluationStage, Se
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--model", default="gpt-4.1")
+    parser.add_argument("--model", default="claude-code/sonnet")
     args = parser.parse_args()
     raw = json.loads(args.config.read_text(encoding="utf-8"))
     stages = tuple(

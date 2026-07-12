@@ -166,12 +166,16 @@ evaluation, and only evaluator-produced JSON scores guide best-first search.
 ```bash
 python launch_constrained_bfts.py \
   --config examples/constrained_marl.json \
-  --model gpt-4.1
+  --model claude-code/sonnet
 ```
 
 The example promotes candidates from a cheap Bellman-operator benchmark to a paired-seed
 MARL learning benchmark. Adapt absolute repository/output paths before use. Run this mode
-inside a sandbox too: model-generated Python is still executed.
+inside a sandbox too: model-generated Python is still executed. The
+`claude-code/<model>` backend invokes the locally authenticated Claude Code CLI, disables
+its tools, and requests schema-validated JSON. This supports a Claude Code subscription
+without treating it as an Anthropic API key; the frozen evaluator remains responsible for
+all code execution and scoring.
 
 ## Citing The AI Scientist-v2
 

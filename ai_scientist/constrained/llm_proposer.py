@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 
 import anthropic
 import openai
@@ -16,7 +18,11 @@ class AIScientistProposer:
     def __init__(self, model: str, temperature: float = 0.7) -> None:
         self.model = model
         self.temperature = temperature
-        if model.startswith("ollama/"):
+        if model.startswith("claude-code/"):
+            self.client = None
+            if shutil.which("claude") is None:
+                raise ValueError("Claude Code CLI is not installed or not on PATH")
+        elif model.startswith("ollama/"):
             self.client = openai.OpenAI(
                 api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
                 base_url="http://localhost:11434/v1",
@@ -36,6 +42,40 @@ class AIScientistProposer:
         return Proposal(hypothesis=payload["hypothesis"], code=payload["code"])
 
     def _complete(self, system: str, prompt: str) -> str:
+        if self.model.startswith("claude-code/"):
+            schema = {
+                "type": "object",
+                "properties": {
+                    "hypothesis": {"type": "string"},
+                    "code": {"type": "string"},
+                },
+                "required": ["hypothesis", "code"],
+                "additionalProperties": False,
+            }
+            result = subprocess.run(
+                [
+                    "claude", "--print", prompt,
+                    "--model", self.model.removeprefix("claude-code/"),
+                    "--system-prompt", system,
+                    "--tools", "",
+                    "--permission-mode", "dontAsk",
+                    "--safe-mode",
+                    "--no-session-persistence",
+                    "--output-format", "json",
+                    "--json-schema", json.dumps(schema),
+                ],
+                text=True,
+                capture_output=True,
+                timeout=900,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr[-4000:])
+            envelope = json.loads(result.stdout)
+            structured = envelope.get("structured_output")
+            if structured is not None:
+                return json.dumps(structured)
+            return envelope["result"]
         if isinstance(self.client, (anthropic.Anthropic, anthropic.AnthropicBedrock)):
             response = self.client.messages.create(
                 model=self.model,
@@ -85,6 +125,13 @@ in one sentence inside the JSON field, not outside the JSON.
             try:
                 response = self._complete(system, prompt)
                 proposals.append(self._parse(response))
-            except (KeyError, TypeError, json.JSONDecodeError, openai.OpenAIError):
+            except (
+                KeyError,
+                TypeError,
+                RuntimeError,
+                subprocess.TimeoutExpired,
+                json.JSONDecodeError,
+                openai.OpenAIError,
+            ):
                 continue
         return proposals
