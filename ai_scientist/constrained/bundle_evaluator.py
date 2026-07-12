@@ -76,7 +76,11 @@ class WorktreeBundleEvaluator:
             check=False,
         )
 
-    def evaluate(self, bundle: CandidateBundle) -> BundleEvaluation:
+    def evaluate(
+        self,
+        bundle: CandidateBundle,
+        stage_inputs: dict[str, dict] | None = None,
+    ) -> BundleEvaluation:
         bundle.validate()
         cfg = self.config
         worktree = Path(tempfile.mkdtemp(prefix="aisci-bundle-"))
@@ -97,9 +101,16 @@ class WorktreeBundleEvaluator:
 
             for stage in cfg.stages:
                 output = worktree / f".bundle_{stage.name}.json"
+                stage_config = worktree / f".bundle_{stage.name}_input.json"
+                if stage_inputs and stage.name in stage_inputs:
+                    stage_config.write_text(
+                        json.dumps(stage_inputs[stage.name], indent=2, sort_keys=True),
+                        encoding="utf-8",
+                    )
                 substitutions = {
                     "output": str(output),
                     "python": str(cfg.shared_python) if cfg.shared_python else "python",
+                    "stage_config": str(stage_config),
                 }
                 command = [part.format(**substitutions) for part in stage.command]
                 result = self._run(command, cwd=worktree / cfg.working_subdir, worktree=worktree)

@@ -106,6 +106,7 @@ class ExperimentDesign:
     rejection_rule: str
     budget_class: str
     confounds: tuple[str, ...]
+    mechanism_config: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         _require_text(self.question, "question", 20)
@@ -118,6 +119,32 @@ class ExperimentDesign:
         _require_text(self.rejection_rule, "rejection_rule", 20)
         if self.budget_class not in {"operator", "mechanism", "learning", "validation"}:
             raise ValueError("invalid experiment budget_class")
+        allowed = {
+            "action_counts", "sample_sizes", "shift_strengths", "noise_levels",
+            "coverage_floor", "scenario_seed",
+        }
+        unknown = set(self.mechanism_config) - allowed
+        if unknown:
+            raise ValueError(f"unknown mechanism_config fields: {sorted(unknown)}")
+        sequence_bounds = {
+            "action_counts": (2, 32),
+            "sample_sizes": (32, 8192),
+            "shift_strengths": (0.0, 1.0),
+            "noise_levels": (0.0, 5.0),
+        }
+        cells = 1
+        for key, (minimum, maximum) in sequence_bounds.items():
+            values = self.mechanism_config.get(key, [])
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"mechanism_config.{key} must be a non-empty list")
+            if any(float(value) < minimum or float(value) > maximum for value in values):
+                raise ValueError(f"mechanism_config.{key} is outside [{minimum}, {maximum}]")
+            cells *= len(values)
+        coverage = float(self.mechanism_config.get("coverage_floor", 0.0))
+        if not 0.001 <= coverage <= 0.25:
+            raise ValueError("mechanism_config.coverage_floor must be in [0.001, 0.25]")
+        if cells > 128:
+            raise ValueError("mechanism_config exceeds the 128-cell budget")
 
 
 @dataclass(frozen=True)

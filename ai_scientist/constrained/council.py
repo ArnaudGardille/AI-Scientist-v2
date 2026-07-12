@@ -83,10 +83,35 @@ EXPERIMENT_SCHEMA = {
             "type": "string", "enum": ["operator", "mechanism", "learning", "validation"]
         },
         "confounds": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "mechanism_config": {
+            "type": "object",
+            "properties": {
+                "action_counts": {
+                    "type": "array", "items": {"type": "integer", "minimum": 2, "maximum": 32}
+                },
+                "sample_sizes": {
+                    "type": "array", "items": {"type": "integer", "minimum": 32, "maximum": 8192}
+                },
+                "shift_strengths": {
+                    "type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "noise_levels": {
+                    "type": "array", "items": {"type": "number", "minimum": 0, "maximum": 5}
+                },
+                "coverage_floor": {"type": "number", "minimum": 0.001, "maximum": 0.25},
+                "scenario_seed": {"type": "integer"},
+            },
+            "required": [
+                "action_counts", "sample_sizes", "shift_strengths", "noise_levels",
+                "coverage_floor", "scenario_seed",
+            ],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "question", "manipulated_variables", "controls", "metrics",
         "expected_signatures", "rejection_rule", "budget_class", "confounds",
+        "mechanism_config",
     ],
     "additionalProperties": False,
 }
