@@ -48,20 +48,38 @@ class FakeEvaluator:
         )
 
 
+class FakeFinalEvaluator:
+    def __init__(self):
+        self.calls = 0
+
+    def evaluate(self, bundle):
+        bundle.validate()
+        self.calls += 1
+        return BundleEvaluation(
+            status="ok",
+            stage_results={"held_out": {"status": "ok", "primary_score": 1.0 / self.calls}},
+            passed_stages=1,
+            complete=True,
+        )
+
+
 class HierarchicalCampaignTest(unittest.TestCase):
     def test_campaign_materializes_auditable_tree_and_expands_multiple_families(self):
         with tempfile.TemporaryDirectory() as tmp:
             evaluator = FakeEvaluator()
+            final_evaluator = FakeFinalEvaluator()
             campaign = HierarchicalCampaign(
                 council=FakeCouncil(),
                 implementation_model=FakeImplementationModel(),
                 evaluator=evaluator,
+                final_evaluator=final_evaluator,
                 config=CampaignConfig(
                     output_dir=Path(tmp),
                     initial_capacity=2,
                     max_nodes=4,
                     revisions_per_expansion=1,
                     max_per_family=1,
+                    finalist_count=2,
                 ),
             )
             best = campaign.run(
@@ -71,8 +89,14 @@ class HierarchicalCampaignTest(unittest.TestCase):
             )
             self.assertEqual(len(campaign.nodes), 4)
             self.assertTrue(best.evaluation.complete)
+            self.assertIsNotNone(best.final_evaluation)
+            self.assertEqual(final_evaluator.calls, 2)
             self.assertTrue((Path(tmp) / "journal.json").is_file())
             self.assertTrue((Path(tmp) / "node_0000" / "candidate" / "sampler.py").is_file())
+            self.assertTrue(any(
+                (Path(tmp) / f"node_{node.node_id:04d}" / "final_evaluation.json").is_file()
+                for node in campaign.nodes
+            ))
             self.assertEqual({node.record.hypothesis.family for node in campaign.nodes[:2]}, {
                 "estimation", "exploration"
             })
