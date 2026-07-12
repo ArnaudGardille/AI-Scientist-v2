@@ -177,6 +177,14 @@ its tools, and requests schema-validated JSON. This supports a Claude Code subsc
 without treating it as an Anthropic API key; the frozen evaluator remains responsible for
 all code execution and scoring.
 
+The hierarchical research layer represents hypotheses as validated scientific records
+before implementation. Independent Claude Code calls act as hypothesis generator,
+theorist, falsifier, experimental designer, and conservative novelty reviewer. A record
+cannot reach code generation until it contains explicit assumptions, quantitative
+predictions, counterexamples, a rejection rule, and a material distinction from nearby
+methods. These conceptual reviews are provenance and promotion gates only; they never
+replace frozen numeric evaluation.
+
 ## Citing The AI Scientist-v2
 
 If you use **The AI Scientist-v2** in your research, please cite our work as follows:
