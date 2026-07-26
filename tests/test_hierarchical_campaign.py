@@ -60,7 +60,7 @@ class FakeFinalEvaluator:
         self.calls += 1
         return BundleEvaluation(
             status="ok",
-            stage_results={"held_out": {"status": "ok", "primary_score": 1.0 / self.calls}},
+            stage_results={"held_out": {"status": "ok", "primary_score": -1000.0}},
             passed_stages=1,
             complete=True,
         )
@@ -87,7 +87,7 @@ class HierarchicalCampaignTest(unittest.TestCase):
                     max_nodes=4,
                     revisions_per_expansion=1,
                     max_per_family=1,
-                    finalist_count=2,
+                    finalist_count=1,
                 ),
             )
             best = campaign.run(
@@ -96,12 +96,19 @@ class HierarchicalCampaignTest(unittest.TestCase):
                         ResearchLens("exploration", "preserve uncertain joint action coverage")),
             )
             self.assertEqual(len(campaign.nodes), 4)
+            self.assertEqual(best.node_id, 3)
             self.assertTrue(best.evaluation.complete)
             self.assertIsNotNone(best.final_evaluation)
-            self.assertEqual(final_evaluator.calls, 2)
+            self.assertEqual(final_evaluator.calls, 1)
             self.assertTrue(all(
                 inputs and "mechanism" in inputs for inputs in evaluator.stage_inputs
             ))
+            self.assertEqual(len({id(node.record) for node in campaign.nodes}), 4)
+            for node in campaign.nodes:
+                self.assertEqual(
+                    node.record.empirical_results["learning"]["primary_score"],
+                    node.evaluation.stage_results["learning"]["primary_score"],
+                )
             self.assertTrue((Path(tmp) / "journal.json").is_file())
             self.assertTrue((Path(tmp) / "node_0000" / "candidate" / "sampler.py").is_file())
             self.assertTrue(any(
@@ -111,6 +118,16 @@ class HierarchicalCampaignTest(unittest.TestCase):
             self.assertEqual({node.record.hypothesis.family for node in campaign.nodes[:2]}, {
                 "estimation", "exploration"
             })
+
+    def test_rejects_using_heldout_evaluation_for_model_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "confirmatory"):
+                CampaignConfig(
+                    output_dir=Path(tmp),
+                    initial_capacity=2,
+                    max_nodes=2,
+                    finalist_count=2,
+                ).validate()
 
 
 if __name__ == "__main__":
