@@ -42,7 +42,22 @@ class ClaudeCodeStructuredModel:
             check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(result.stderr[-4000:])
+            detail = result.stderr.strip()
+            if result.stdout.strip():
+                try:
+                    envelope = json.loads(result.stdout)
+                    detail = str(
+                        envelope.get("result")
+                        or envelope.get("error")
+                        or envelope.get("subtype")
+                        or result.stdout
+                    )
+                except json.JSONDecodeError:
+                    detail = result.stdout.strip()
+            raise RuntimeError(
+                f"Claude Code failed with exit code {result.returncode}: "
+                f"{detail[-4000:] or 'no diagnostic output'}"
+            )
         envelope = json.loads(result.stdout)
         payload = envelope.get("structured_output")
         if payload is None:
