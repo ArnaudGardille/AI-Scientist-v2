@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -46,13 +47,18 @@ class CampaignConfig:
     revisions_per_expansion: int = 2
     max_per_family: int = 2
     min_conceptual_distance: float = 0.2
-    finalist_count: int = 2
+    finalist_count: int = 1
 
     def validate(self) -> None:
         if self.initial_capacity < 1 or self.max_nodes < self.initial_capacity:
             raise ValueError("invalid campaign node budget")
-        if self.revisions_per_expansion < 1 or self.max_per_family < 1 or self.finalist_count < 1:
+        if self.revisions_per_expansion < 1 or self.max_per_family < 1:
             raise ValueError("invalid campaign branching parameters")
+        if self.finalist_count != 1:
+            raise ValueError(
+                "finalist_count must be 1: the held-out evaluator is confirmatory, "
+                "not a model-selection stage"
+            )
 
 
 @dataclass
@@ -87,6 +93,16 @@ class HierarchicalCampaign:
             max_per_family=config.max_per_family,
         )
         self.nodes: list[CampaignNode] = []
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     @staticmethod
     def _objectives(record: ResearchRecord) -> ResearchObjectives:
@@ -142,33 +158,35 @@ class HierarchicalCampaign:
             bundle,
             stage_inputs={"mechanism": record.experiment.mechanism_config},
         )
-        record.phase = ResearchPhase.VALIDATION if evaluation.complete else ResearchPhase.SCREENING
-        record.empirical_results = evaluation.stage_results
+        # Archive records describe conceptual hypotheses. Each implementation node owns an
+        # immutable-at-creation snapshot so later revisions cannot rewrite earlier provenance.
+        node_record = copy.deepcopy(record)
+        node_record.phase = (
+            ResearchPhase.VALIDATION if evaluation.complete else ResearchPhase.SCREENING
+        )
+        node_record.empirical_results = copy.deepcopy(evaluation.stage_results)
         node = CampaignNode(
             node_id=len(self.nodes),
             parent_id=parent_id,
-            record=record,
+            record=node_record,
             bundle=bundle,
             evaluation=evaluation,
             revision_rationale=rationale,
         )
         self.nodes.append(node)
         self._save_node(node)
+        self._save_journal()
         return node
 
     def _save_node(self, node: CampaignNode) -> None:
         directory = self.config.output_dir / f"node_{node.node_id:04d}"
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "hypothesis.json").write_text(
-            json.dumps(node.record.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
-        )
-        (directory / "evaluation.json").write_text(
-            json.dumps(asdict(node.evaluation), indent=2, sort_keys=True), encoding="utf-8"
-        )
+        self._write_json(directory / "hypothesis.json", node.record.to_dict())
+        self._write_json(directory / "evaluation.json", asdict(node.evaluation))
         if node.final_evaluation is not None:
-            (directory / "final_evaluation.json").write_text(
-                json.dumps(asdict(node.final_evaluation), indent=2, sort_keys=True),
-                encoding="utf-8",
+            self._write_json(
+                directory / "final_evaluation.json",
+                asdict(node.final_evaluation),
             )
         node.bundle.materialize(directory / "candidate")
 
@@ -192,38 +210,23 @@ class HierarchicalCampaign:
                 for node in self.nodes
             ],
         }
-        (self.config.output_dir / "journal.json").write_text(
-            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        self._write_json(self.config.output_dir / "journal.json", payload)
 
     def best_node(self) -> CampaignNode | None:
-        validated = [node for node in self.nodes if node.final_evaluation is not None]
-        if validated:
-            return max(validated, key=lambda node: node.final_evaluation.priority())
+        # Candidate selection is frozen before the held-out run. The final result can confirm
+        # or reject that choice, but must never select a different implementation.
         return max(self.nodes, key=lambda node: node.evaluation.priority(), default=None)
 
     def _validate_finalists(self) -> None:
         if self.final_evaluator is None:
             return
-        eligible = sorted(
-            (node for node in self.nodes if node.evaluation.complete),
-            key=lambda node: node.evaluation.priority(),
-            reverse=True,
-        )
-        seen_bundles = set()
-        finalists = []
-        for node in eligible:
-            fingerprint = json.dumps(node.bundle.files, sort_keys=True)
-            if fingerprint in seen_bundles:
-                continue
-            seen_bundles.add(fingerprint)
-            finalists.append(node)
-            if len(finalists) == self.config.finalist_count:
-                break
-        for node in finalists:
-            # Held-out validation deliberately ignores agent-designed experiment inputs.
-            node.final_evaluation = self.final_evaluator.evaluate(node.bundle)
-            self._save_node(node)
+        selected = self.best_node()
+        if selected is None or not selected.evaluation.complete:
+            return
+        # Held-out validation deliberately ignores agent-designed experiment inputs.
+        selected.final_evaluation = self.final_evaluator.evaluate(selected.bundle)
+        self._save_node(selected)
+        self._save_journal()
 
     def run(
         self,
