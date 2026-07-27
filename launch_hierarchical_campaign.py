@@ -132,6 +132,7 @@ def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
             experiment_stage_name=campaign_raw.get(
                 "experiment_stage_name", "mechanism"
             ),
+            max_concept_revisions=campaign_raw.get("max_concept_revisions", 0),
             resume_protocol=resume_protocol,
         ),
     )

@@ -162,6 +162,24 @@ class NoveltyReview:
         _score(self.novelty_score, "novelty_score")
 
 
+@dataclass(frozen=True)
+class RevisionAudit:
+    preserves_objective: bool
+    substantive_mechanism_change: bool
+    addresses_reviewed_failure: bool
+    objective_analysis: str
+    mechanism_analysis: str
+    failure_resolution_analysis: str
+
+    def validate(self) -> None:
+        for name in (
+            "objective_analysis",
+            "mechanism_analysis",
+            "failure_resolution_analysis",
+        ):
+            _require_text(getattr(self, name), name, 20)
+
+
 @dataclass
 class ResearchRecord:
     hypothesis: ResearchHypothesis
@@ -170,12 +188,19 @@ class ResearchRecord:
     falsification: FalsificationReview | None = None
     experiment: ExperimentDesign | None = None
     novelty: NoveltyReview | None = None
+    revision_audit: RevisionAudit | None = None
     empirical_results: dict[str, Any] = field(default_factory=dict)
     provenance: list[dict[str, str]] = field(default_factory=list)
 
     def validate(self) -> None:
         self.hypothesis.validate()
-        for artifact in (self.theory, self.falsification, self.experiment, self.novelty):
+        for artifact in (
+            self.theory,
+            self.falsification,
+            self.experiment,
+            self.novelty,
+            self.revision_audit,
+        ):
             if artifact is not None:
                 artifact.validate()
 
@@ -252,11 +277,65 @@ class ResearchRecord:
                 "required": "likely_incremental is false",
             },
         )
+        checks = list(checks)
+        is_revision = any(
+            "parent_hypothesis_id" in item for item in self.provenance
+        )
+        if is_revision:
+            checks.extend(
+                (
+                    {
+                        "name": "revision_audit_present",
+                        "passed": self.revision_audit is not None,
+                        "observed": self.revision_audit is not None,
+                        "required": True,
+                    },
+                    {
+                        "name": "revision_preserves_objective",
+                        "passed": bool(
+                            self.revision_audit
+                            and self.revision_audit.preserves_objective
+                        ),
+                        "observed": (
+                            self.revision_audit.preserves_objective
+                            if self.revision_audit
+                            else None
+                        ),
+                        "required": True,
+                    },
+                    {
+                        "name": "revision_changes_mechanism",
+                        "passed": bool(
+                            self.revision_audit
+                            and self.revision_audit.substantive_mechanism_change
+                        ),
+                        "observed": (
+                            self.revision_audit.substantive_mechanism_change
+                            if self.revision_audit
+                            else None
+                        ),
+                        "required": True,
+                    },
+                    {
+                        "name": "revision_addresses_failure",
+                        "passed": bool(
+                            self.revision_audit
+                            and self.revision_audit.addresses_reviewed_failure
+                        ),
+                        "observed": (
+                            self.revision_audit.addresses_reviewed_failure
+                            if self.revision_audit
+                            else None
+                        ),
+                        "required": True,
+                    },
+                )
+            )
         failed_checks = [check["name"] for check in checks if not check["passed"]]
         return {
             "promotable": not failed_checks,
             "failed_checks": failed_checks,
-            "checks": list(checks),
+            "checks": checks,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -297,6 +376,7 @@ class ResearchRecord:
             novelty_payload["nearest_methods"] = tuple(
                 novelty_payload["nearest_methods"]
             )
+        revision_audit_payload = payload.get("revision_audit")
 
         hypothesis = ResearchHypothesis(**hypothesis_payload)
         if hypothesis.with_stable_id().hypothesis_id != hypothesis.hypothesis_id:
@@ -317,6 +397,11 @@ class ResearchRecord:
                 else None
             ),
             novelty=NoveltyReview(**novelty_payload) if novelty_payload is not None else None,
+            revision_audit=(
+                RevisionAudit(**revision_audit_payload)
+                if revision_audit_payload is not None
+                else None
+            ),
             empirical_results=dict(payload.get("empirical_results", {})),
             provenance=[dict(item) for item in payload.get("provenance", [])],
         )
