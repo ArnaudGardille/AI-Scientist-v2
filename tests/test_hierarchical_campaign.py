@@ -187,6 +187,7 @@ class HierarchicalCampaignTest(unittest.TestCase):
             ))
             self.assertEqual(len({id(node.record) for node in campaign.nodes}), 4)
             for node in campaign.nodes:
+                self.assertEqual(node.record.phase, ResearchPhase.SCREENING)
                 self.assertEqual(
                     node.record.empirical_results["learning"]["primary_score"],
                     node.evaluation.stage_results["learning"]["primary_score"],
