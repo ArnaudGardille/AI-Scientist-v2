@@ -74,6 +74,8 @@ class BundleEvaluation:
             "buckets",
             "raw_score",
             "support_gate_failures",
+            "immediate_normalized_regret",
+            "no_drift_regressions",
         }
         scenario_keys = {
             "support_gate",
@@ -89,6 +91,22 @@ class BundleEvaluation:
         stages = {}
         for name, payload in self.stage_results.items():
             summary = {key: payload[key] for key in stage_keys if key in payload}
+            controls = payload.get("controls")
+            if isinstance(controls, dict):
+                safe_control_keys = {
+                    "no_drift_screening_bound",
+                    "drift_screening_bound",
+                    "interaction_screening_bound",
+                }
+                summary["controls"] = {
+                    control: {
+                        key: value[key]
+                        for key in safe_control_keys
+                        if key in value
+                    }
+                    for control, value in controls.items()
+                    if isinstance(value, dict)
+                }
             scenarios = payload.get("scenarios")
             if isinstance(scenarios, dict):
                 summary["scenarios"] = {

@@ -127,7 +127,26 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
                             "paired_utility_delta": [1.0, 2.0],
                         }
                     },
-                }
+                },
+                "causal_drift": {
+                    "status": "ok",
+                    "primary_score": 0.1,
+                    "paired_seeds": [9, 10],
+                    "candidate_utility": {
+                        "drift": [0.8, 0.9],
+                        "no_drift": [0.7, 0.8],
+                    },
+                    "immediate_normalized_regret": 1.0,
+                    "controls": {
+                        "uniform": {
+                            "drift_delta": [0.2, 0.3],
+                            "causal_interaction": [0.1, 0.2],
+                            "drift_screening_bound": 0.15,
+                            "interaction_screening_bound": 0.05,
+                            "no_drift_screening_bound": -0.01,
+                        }
+                    },
+                },
             },
             passed_stages=1,
             complete=True,
@@ -138,9 +157,14 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
         self.assertNotIn("true_backup", feedback)
         self.assertNotIn("paired_seeds", feedback)
         self.assertNotIn("paired_utility_delta", feedback)
+        self.assertNotIn("candidate_utility", feedback)
+        self.assertNotIn("drift_delta", feedback)
+        self.assertNotIn('"causal_interaction"', feedback)
         self.assertNotIn("mean_estimate", feedback)
         self.assertNotIn('"bias"', feedback)
         self.assertIn('"mse": 1.5', feedback)
+        self.assertIn('"interaction_screening_bound": 0.05', feedback)
+        self.assertIn('"immediate_normalized_regret": 1.0', feedback)
 
     def test_diagnostic_stage_score_does_not_change_candidate_priority(self):
         with tempfile.TemporaryDirectory() as tmp:
