@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from ai_scientist.constrained.bundle import CandidateBundle
 from ai_scientist.constrained.bundle_evaluator import (
+    BundleEvaluation,
     BundleEvaluatorConfig,
     WorktreeBundleEvaluator,
 )
@@ -88,6 +90,39 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
             self.assertEqual(result.status, "integrity_failure")
             self.assertFalse(result.complete)
             self.assertEqual((repo / "frozen.txt").read_text(), "immutable\n")
+
+    def test_designer_feedback_redacts_targets_seeds_and_per_seed_outcomes(self):
+        evaluation = BundleEvaluation(
+            status="ok",
+            stage_results={
+                "operator": {
+                    "status": "ok",
+                    "primary_score": -0.1,
+                    "paired_seeds": [7, 8],
+                    "scenarios": {
+                        "private": {
+                            "true_backup": 12.0,
+                            "mean_estimate": 11.0,
+                            "bias": -1.0,
+                            "mse": 1.5,
+                            "variance": 0.5,
+                            "paired_utility_delta": [1.0, 2.0],
+                        }
+                    },
+                }
+            },
+            passed_stages=1,
+            complete=True,
+        )
+
+        feedback = json.dumps(evaluation.designer_feedback(), sort_keys=True)
+
+        self.assertNotIn("true_backup", feedback)
+        self.assertNotIn("paired_seeds", feedback)
+        self.assertNotIn("paired_utility_delta", feedback)
+        self.assertNotIn("mean_estimate", feedback)
+        self.assertNotIn('"bias"', feedback)
+        self.assertIn('"mse": 1.5', feedback)
 
 
 if __name__ == "__main__":

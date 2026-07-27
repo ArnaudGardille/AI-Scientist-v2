@@ -73,6 +73,28 @@ def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
     )
 
 
+def result_payload(best) -> dict:
+    heldout = best.final_evaluation if best else None
+    accepted = bool(heldout and heldout.complete)
+    return {
+        "best_node_id": best.node_id if best else None,
+        "status": (
+            "accepted"
+            if accepted
+            else "rejected:heldout"
+            if heldout
+            else best.evaluation.status
+            if best
+            else "no_promotable_hypothesis"
+        ),
+        "accepted": accepted,
+        "screening_status": best.evaluation.status if best else None,
+        "screening_priority": best.evaluation.priority() if best else None,
+        "heldout_status": heldout.status if heldout else None,
+        "heldout_priority": heldout.priority() if heldout else None,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -86,15 +108,7 @@ def main() -> None:
         for item in raw.get("research_lenses", [])
     )
     best = campaign.run(problem, lenses=lenses) if lenses else campaign.run(problem)
-    print(json.dumps({
-        "best_node_id": best.node_id if best else None,
-        "status": best.evaluation.status if best else "no_promotable_hypothesis",
-        "priority": (
-            best.final_evaluation.priority()
-            if best and best.final_evaluation
-            else best.evaluation.priority() if best else None
-        ),
-    }))
+    print(json.dumps(result_payload(best)))
 
 
 if __name__ == "__main__":
