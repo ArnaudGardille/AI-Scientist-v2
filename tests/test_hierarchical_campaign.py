@@ -104,6 +104,7 @@ class HierarchicalCampaignTest(unittest.TestCase):
                     revisions_per_expansion=1,
                     max_per_family=1,
                     finalist_count=1,
+                    experiment_stage_name="designed_diagnostic",
                 ),
             )
             best = campaign.run(
@@ -117,7 +118,8 @@ class HierarchicalCampaignTest(unittest.TestCase):
             self.assertIsNotNone(best.final_evaluation)
             self.assertEqual(final_evaluator.calls, 1)
             self.assertTrue(all(
-                inputs and "mechanism" in inputs for inputs in evaluator.stage_inputs
+                inputs and "designed_diagnostic" in inputs
+                for inputs in evaluator.stage_inputs
             ))
             self.assertEqual(len({id(node.record) for node in campaign.nodes}), 4)
             for node in campaign.nodes:

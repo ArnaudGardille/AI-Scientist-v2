@@ -48,6 +48,7 @@ class CampaignConfig:
     max_per_family: int = 2
     min_conceptual_distance: float = 0.2
     finalist_count: int = 1
+    experiment_stage_name: str = "mechanism"
 
     def validate(self) -> None:
         if self.initial_capacity < 1 or self.max_nodes < self.initial_capacity:
@@ -59,6 +60,8 @@ class CampaignConfig:
                 "finalist_count must be 1: the held-out evaluator is confirmatory, "
                 "not a model-selection stage"
             )
+        if not self.experiment_stage_name.strip():
+            raise ValueError("experiment_stage_name must be non-empty")
 
 
 @dataclass
@@ -156,7 +159,9 @@ class HierarchicalCampaign:
     ) -> CampaignNode:
         evaluation = self.evaluator.evaluate(
             bundle,
-            stage_inputs={"mechanism": record.experiment.mechanism_config},
+            stage_inputs={
+                self.config.experiment_stage_name: record.experiment.mechanism_config
+            },
         )
         # Archive records describe conceptual hypotheses. Each implementation node owns an
         # immutable-at-creation snapshot so later revisions cannot rewrite earlier provenance.

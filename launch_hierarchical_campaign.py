@@ -70,6 +70,9 @@ def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
             max_per_family=campaign_raw.get("max_per_family", 2),
             min_conceptual_distance=campaign_raw.get("min_conceptual_distance", 0.2),
             finalist_count=campaign_raw.get("finalist_count", 1),
+            experiment_stage_name=campaign_raw.get(
+                "experiment_stage_name", "mechanism"
+            ),
         ),
     )
 
