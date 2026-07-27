@@ -24,6 +24,7 @@ def _stages(raw_stages: list[dict]) -> tuple[EvaluationStage, ...]:
             command=tuple(stage["command"]),
             minimum_score=stage.get("minimum_score"),
             required_status=stage.get("required_status", "ok"),
+            contributes_to_priority=stage.get("contributes_to_priority", True),
         )
         for stage in raw_stages
     )

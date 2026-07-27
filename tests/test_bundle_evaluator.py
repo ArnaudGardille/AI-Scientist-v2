@@ -48,7 +48,13 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
         )
         return repo
 
-    def _config(self, repo: Path, *, tamper: bool = False) -> BundleEvaluatorConfig:
+    def _config(
+        self,
+        repo: Path,
+        *,
+        tamper: bool = False,
+        contributes_to_priority: bool = True,
+    ) -> BundleEvaluatorConfig:
         command = [
             "{python}", "evaluate.py", "--output", "{output}",
             "--config", "{stage_config}",
@@ -61,7 +67,14 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
             candidate_path=Path("candidate"),
             working_subdir=Path("."),
             frozen_paths=(Path("frozen.txt"), Path("evaluate.py")),
-            stages=(EvaluationStage("gate", tuple(command), minimum_score=1.0),),
+            stages=(
+                EvaluationStage(
+                    "gate",
+                    tuple(command),
+                    minimum_score=1.0,
+                    contributes_to_priority=contributes_to_priority,
+                ),
+            ),
             shared_python=Path(sys.executable),
         )
 
@@ -123,6 +136,19 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
         self.assertNotIn("mean_estimate", feedback)
         self.assertNotIn('"bias"', feedback)
         self.assertIn('"mse": 1.5', feedback)
+
+    def test_diagnostic_stage_score_does_not_change_candidate_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repository(Path(tmp))
+            files = dict(VALID)
+            files["state.py"] = "SCORE = 2.0\n"
+            result = WorktreeBundleEvaluator(
+                self._config(repo, contributes_to_priority=False)
+            ).evaluate(CandidateBundle(files))
+
+            self.assertTrue(result.complete)
+            self.assertEqual(result.ranking_score, 0.0)
+            self.assertEqual(result.priority(), 1000.0)
 
 
 if __name__ == "__main__":

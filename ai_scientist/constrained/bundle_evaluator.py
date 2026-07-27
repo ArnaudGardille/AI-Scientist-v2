@@ -51,10 +51,16 @@ class BundleEvaluation:
     passed_stages: int = 0
     complete: bool = False
     feedback: str = ""
+    ranking_score: float | None = None
 
     def priority(self) -> float:
-        scores = [float(value["primary_score"]) for value in self.stage_results.values()]
-        return 1000.0 * self.passed_stages + sum(scores)
+        score = self.ranking_score
+        if score is None:
+            score = sum(
+                float(value["primary_score"])
+                for value in self.stage_results.values()
+            )
+        return 1000.0 * self.passed_stages + score
 
     def designer_feedback(self) -> dict:
         """Return adaptive-search diagnostics without private benchmark answers."""
@@ -130,7 +136,7 @@ class WorktreeBundleEvaluator:
         cfg = self.config
         worktree = Path(tempfile.mkdtemp(prefix="aisci-bundle-"))
         shutil.rmtree(worktree)
-        evaluation = BundleEvaluation(status="pending")
+        evaluation = BundleEvaluation(status="pending", ranking_score=0.0)
         try:
             add = subprocess.run(
                 ["git", "worktree", "add", "--detach", str(worktree), cfg.base_ref],
@@ -168,6 +174,8 @@ class WorktreeBundleEvaluator:
                 if not math.isfinite(score):
                     raise ValueError(f"non-finite primary score in {stage.name}")
                 evaluation.stage_results[stage.name] = payload
+                if stage.contributes_to_priority:
+                    evaluation.ranking_score += score
                 if payload.get("status") != stage.required_status:
                     evaluation.status = f"rejected:{stage.name}"
                     evaluation.feedback = json.dumps(payload, sort_keys=True)[-8000:]

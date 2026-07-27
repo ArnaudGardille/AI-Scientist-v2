@@ -19,6 +19,7 @@ class EvaluationStage:
     command: tuple[str, ...]
     minimum_score: float | None = None
     required_status: str = "ok"
+    contributes_to_priority: bool = True
 
 
 @dataclass(frozen=True)
@@ -151,7 +152,11 @@ class ConstrainedBFTS:
                 return
 
             node.stage_results = stage_results
-            stage_scores = [float(value["primary_score"]) for value in stage_results.values()]
+            stage_scores = [
+                float(stage_results[stage.name]["primary_score"])
+                for stage in cfg.stages
+                if stage.name in stage_results and stage.contributes_to_priority
+            ]
             node.score = sum(stage_scores) + (1000.0 if completed_all else 0.0)
             if completed_all:
                 node.status = "ok"
