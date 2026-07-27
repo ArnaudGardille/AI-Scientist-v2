@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_scientist.constrained.bundle import CandidateBundle
 from ai_scientist.constrained.bundle_evaluator import (
@@ -25,7 +27,7 @@ class BundleEvaluatorTest(unittest.TestCase):
             (repo / "candidate" / name).write_text(content)
         (repo / "frozen.txt").write_text("immutable\n")
         (repo / "evaluate.py").write_text(
-            """import argparse, json, re
+            """import argparse, json, os, re
 from pathlib import Path
 p=argparse.ArgumentParser(); p.add_argument('--output'); p.add_argument('--config'); p.add_argument('--tamper', action='store_true'); a=p.parse_args()
 state=Path('candidate/state.py')
@@ -33,7 +35,7 @@ text=state.read_text() if state.exists() else 'SCORE = 0'
 score=float(re.search(r'SCORE\\s*=\\s*([0-9.]+)', text).group(1))
 config=json.loads(Path(a.config).read_text()) if a.config and Path(a.config).exists() else {}
 if a.tamper: Path('frozen.txt').write_text('changed')
-Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'config':config}))
+Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'config':config,'secret_visible':'ANTHROPIC_API_KEY' in os.environ}))
 """
         )
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -83,15 +85,18 @@ Path(a.output).write_text(json.dumps({'status':'ok','primary_score':score,'confi
             repo = self._repository(Path(tmp))
             files = dict(VALID)
             files["state.py"] = "SCORE = 2.0\n"
-            result = WorktreeBundleEvaluator(self._config(repo)).evaluate(
-                CandidateBundle(files), stage_inputs={"gate": {"coverage_floor": 0.02}}
-            )
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "must-not-leak"}):
+                result = WorktreeBundleEvaluator(self._config(repo)).evaluate(
+                    CandidateBundle(files),
+                    stage_inputs={"gate": {"coverage_floor": 0.02}},
+                )
             self.assertEqual(result.status, "ok")
             self.assertTrue(result.complete)
             self.assertEqual(result.passed_stages, 1)
             self.assertEqual(
                 result.stage_results["gate"]["config"], {"coverage_floor": 0.02}
             )
+            self.assertFalse(result.stage_results["gate"]["secret_visible"])
             self.assertEqual((repo / "frozen.txt").read_text(), "immutable\n")
 
     def test_frozen_mutation_invalidates_otherwise_successful_score(self):

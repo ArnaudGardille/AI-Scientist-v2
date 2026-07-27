@@ -113,10 +113,22 @@ class WorktreeBundleEvaluator:
         self.config = config
 
     def _run(self, args: list[str], *, cwd: Path, worktree: Path) -> subprocess.CompletedProcess:
-        environment = os.environ.copy()
-        existing = environment.get("PYTHONPATH", "")
+        safe_keys = {"PATH", "LANG", "LC_ALL", "TZ"}
+        safe_prefixes = ("JAX_", "XLA_", "OMP_", "TF_CPP_")
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key in safe_keys or key.startswith(safe_prefixes)
+        }
+        sandbox_home = worktree / ".sandbox_home"
+        sandbox_tmp = worktree / ".sandbox_tmp"
+        sandbox_home.mkdir(exist_ok=True)
+        sandbox_tmp.mkdir(exist_ok=True)
+        environment["HOME"] = str(sandbox_home)
+        environment["TMPDIR"] = str(sandbox_tmp)
+        environment["PYTHONNOUSERSITE"] = "1"
         source = str(worktree / self.config.working_subdir)
-        environment["PYTHONPATH"] = source if not existing else f"{source}{os.pathsep}{existing}"
+        environment["PYTHONPATH"] = source
         return subprocess.run(
             args,
             cwd=cwd,
@@ -125,6 +137,7 @@ class WorktreeBundleEvaluator:
             capture_output=True,
             timeout=self.config.timeout_seconds,
             check=False,
+            start_new_session=True,
         )
 
     def evaluate(
