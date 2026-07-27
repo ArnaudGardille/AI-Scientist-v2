@@ -116,6 +116,8 @@ class ClaudeCodeStructuredModel:
             "status": "pending",
             "attempts": 0,
         }
+        self.telemetry.append(record)
+        self._write_telemetry()
         last_error: Exception | None = None
         try:
             for attempt in range(self.max_retries + 1):
@@ -182,5 +184,4 @@ class ClaudeCodeStructuredModel:
         finally:
             record["elapsed_seconds"] = time.monotonic() - request_started
             record["cumulative_calls"] = self.call_count
-            self.telemetry.append(record)
             self._write_telemetry()

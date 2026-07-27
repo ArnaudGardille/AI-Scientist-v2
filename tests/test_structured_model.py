@@ -105,6 +105,37 @@ class ClaudeCodeStructuredModelTest(unittest.TestCase):
             model.complete(**request)
         self.assertEqual(run.call_count, 1)
 
+    @patch("ai_scientist.constrained.structured_model.shutil.which", return_value="/bin/claude")
+    @patch("ai_scientist.constrained.structured_model.subprocess.run")
+    def test_writes_pending_event_before_invoking_claude(self, run, _which):
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry = Path(tmp) / "telemetry.json"
+
+            def observe_pending(*args, **kwargs):
+                del args, kwargs
+                records = json.loads(telemetry.read_text(encoding="utf-8"))
+                self.assertEqual(records[-1]["status"], "pending")
+                self.assertEqual(records[-1]["attempts"], 0)
+                return subprocess.CompletedProcess(
+                    args=["claude"],
+                    returncode=0,
+                    stdout=json.dumps({"structured_output": {"ok": True}}),
+                    stderr="",
+                )
+
+            run.side_effect = observe_pending
+            model = ClaudeCodeStructuredModel(telemetry_path=telemetry)
+            model.complete(
+                role="test",
+                system="test",
+                prompt="test",
+                schema={"type": "object"},
+            )
+
+            records = json.loads(telemetry.read_text(encoding="utf-8"))
+            self.assertEqual(records[-1]["status"], "ok")
+            self.assertEqual(records[-1]["attempts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
