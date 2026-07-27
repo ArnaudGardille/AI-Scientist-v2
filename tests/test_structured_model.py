@@ -113,6 +113,37 @@ class ClaudeCodeStructuredModelTest(unittest.TestCase):
 
     @patch("ai_scientist.constrained.structured_model.shutil.which", return_value="/bin/claude")
     @patch("ai_scientist.constrained.structured_model.subprocess.run")
+    def test_does_not_retry_subscription_session_limit(self, run, _which):
+        run.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "result": (
+                        "You've hit your session limit - resets 11:40pm "
+                        "(Europe/Paris)"
+                    ),
+                }
+            ),
+            stderr="",
+        )
+        model = ClaudeCodeStructuredModel(max_retries=2, retry_base_seconds=0)
+
+        with self.assertRaisesRegex(RuntimeError, "session limit"):
+            model.complete(
+                role="test",
+                system="test",
+                prompt="test",
+                schema={"type": "object"},
+            )
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(model.call_count, 1)
+
+    @patch("ai_scientist.constrained.structured_model.shutil.which", return_value="/bin/claude")
+    @patch("ai_scientist.constrained.structured_model.subprocess.run")
     def test_enforces_global_model_call_budget(self, run, _which):
         run.return_value = subprocess.CompletedProcess(
             args=["claude"],

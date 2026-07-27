@@ -94,9 +94,19 @@ class ClaudeCodeStructuredModel:
 
     @staticmethod
     def _is_transient(status: int | None, detail: str) -> bool:
+        lowered = detail.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "session limit",
+                "usage limit",
+                "resets at",
+                "resets ",
+            )
+        ):
+            return False
         if status in {408, 409, 425, 429, 500, 502, 503, 504, 529}:
             return True
-        lowered = detail.lower()
         return any(
             marker in lowered
             for marker in (
