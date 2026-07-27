@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
+import fcntl
+import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+import os
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -49,6 +52,7 @@ class CampaignConfig:
     min_conceptual_distance: float = 0.2
     finalist_count: int = 1
     experiment_stage_name: str = "mechanism"
+    resume_protocol: dict = field(default_factory=dict)
 
     def validate(self) -> None:
         if self.initial_capacity < 1 or self.max_nodes < self.initial_capacity:
@@ -62,6 +66,10 @@ class CampaignConfig:
             )
         if not self.experiment_stage_name.strip():
             raise ValueError("experiment_stage_name must be non-empty")
+        try:
+            json.dumps(self.resume_protocol, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("resume_protocol must be JSON serializable") from exc
 
 
 @dataclass
@@ -80,6 +88,41 @@ class ReviewedConcept:
     record: ResearchRecord
     gate: dict
     objectives: ResearchObjectives
+
+
+class CampaignRunLock:
+    """OS-released single-writer lock for one campaign output directory."""
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir
+        self.handle = None
+
+    def __enter__(self) -> "CampaignRunLock":
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        path = self.output_dir / ".campaign.lock"
+        self.handle = path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            self.handle.close()
+            self.handle = None
+            raise RuntimeError(
+                f"campaign output is already locked by another process: {self.output_dir}"
+            ) from exc
+        self.handle.seek(0)
+        self.handle.truncate()
+        self.handle.write(f"pid={os.getpid()}\n")
+        self.handle.flush()
+        os.fsync(self.handle.fileno())
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+        if self.handle is None:
+            return
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+        self.handle = None
 
 
 class HierarchicalCampaign:
@@ -109,11 +152,16 @@ class HierarchicalCampaign:
     def _write_json(path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     @staticmethod
     def _objectives(record: ResearchRecord) -> ResearchObjectives:
@@ -133,6 +181,7 @@ class HierarchicalCampaign:
         record: ResearchRecord,
         *,
         parent: CampaignNode | None = None,
+        request_id: str,
     ) -> tuple[CandidateBundle, str]:
         parent_context = ""
         if parent is not None:
@@ -154,12 +203,22 @@ class HierarchicalCampaign:
                 + parent_context
             ),
             schema=IMPLEMENTATION_SCHEMA,
+            request_id=request_id,
         )
         bundle = CandidateBundle(
             files=dict(payload["files"]),
             hypothesis_summary=payload["hypothesis_summary"],
         )
-        bundle.validate()
+        try:
+            bundle.validate()
+        except Exception as exc:
+            reject = getattr(self.model, "reject_response", None)
+            if reject is not None:
+                reject(request_id, type(exc).__name__)
+            raise
+        accept = getattr(self.model, "accept_response", None)
+        if accept is not None:
+            accept(request_id)
         return bundle, payload["hypothesis_summary"]
 
     def _evaluate_node(
@@ -215,6 +274,82 @@ class HierarchicalCampaign:
                 "objectives": asdict(concept.objectives),
             },
         )
+
+    def _checkpoint_path(self, index: int) -> Path:
+        return self.config.output_dir / "checkpoints" / f"concept_{index:04d}.json"
+
+    def _save_checkpoint(
+        self,
+        index: int,
+        lens: ResearchLens,
+        record: ResearchRecord,
+    ) -> None:
+        self._write_json(
+            self._checkpoint_path(index),
+            {
+                "concept_index": index,
+                "lens": asdict(lens),
+                "record": record.to_dict(),
+            },
+        )
+
+    def _prepare_resume(
+        self,
+        problem: str,
+        lenses: tuple[ResearchLens, ...],
+    ) -> None:
+        if len({lens.name for lens in lenses}) != len(lenses):
+            raise ValueError("research lens names must be unique for durable request IDs")
+        lens_payload = [asdict(lens) for lens in lenses]
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"problem": problem, "lenses": lens_payload},
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        manifest_path = self.config.output_dir / "checkpoints" / "manifest.json"
+        expected = {
+            "schema_version": 2,
+            "campaign_fingerprint": fingerprint,
+            "problem_sha256": hashlib.sha256(problem.encode("utf-8")).hexdigest(),
+            "lenses": lens_payload,
+            "resume_protocol": self.config.resume_protocol,
+            "implementation_schema_sha256": hashlib.sha256(
+                json.dumps(IMPLEMENTATION_SCHEMA, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            "source_sha256": {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(Path(__file__).parent.glob("*.py"))
+            },
+        }
+        if manifest_path.exists():
+            observed = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if observed != expected:
+                raise ValueError(
+                    "campaign checkpoint does not match the current problem and lenses"
+                )
+            return
+        self._write_json(manifest_path, expected)
+
+    def _generate_or_resume(
+        self,
+        problem: str,
+        index: int,
+        lens: ResearchLens,
+    ) -> ResearchRecord:
+        checkpoint_path = self._checkpoint_path(index)
+        if checkpoint_path.exists():
+            payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if payload.get("concept_index") != index or payload.get("lens") != asdict(lens):
+                raise ValueError(f"invalid conceptual checkpoint at {checkpoint_path}")
+            return ResearchRecord.from_dict(payload["record"])
+
+        generated = self.council.generate(problem, lenses=(lens,))
+        if len(generated) != 1:
+            raise ValueError("each research lens must generate exactly one hypothesis")
+        record = generated[0]
+        self._save_checkpoint(index, lens, record)
+        return record
 
     def _save_journal(self) -> None:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -279,9 +414,28 @@ class HierarchicalCampaign:
         problem: str,
         lenses: tuple[ResearchLens, ...] = DEFAULT_LENSES,
     ) -> CampaignNode | None:
-        generated = self.council.generate(problem, lenses=lenses)
-        for record in generated:
-            reviewed = self.council.review(record, problem)
+        with CampaignRunLock(self.config.output_dir):
+            return self._run_locked(problem, lenses)
+
+    def _run_locked(
+        self,
+        problem: str,
+        lenses: tuple[ResearchLens, ...],
+    ) -> CampaignNode | None:
+        begin_locked_run = getattr(self.model, "begin_locked_run", None)
+        if begin_locked_run is not None:
+            begin_locked_run()
+        self._prepare_resume(problem, lenses)
+        for index, lens in enumerate(lenses):
+            record = self._generate_or_resume(problem, index, lens)
+            reviewed = self.council.review(
+                record,
+                problem,
+                on_progress=lambda current, i=index, item=lens: self._save_checkpoint(
+                    i, item, current
+                ),
+            )
+            self._save_checkpoint(index, lens, reviewed)
             gate = reviewed.conceptual_gate()
             objectives = self._objectives(reviewed)
             concept = ReviewedConcept(
@@ -297,7 +451,10 @@ class HierarchicalCampaign:
 
         entries = self.archive.frontier(self.config.initial_capacity)
         for entry in entries:
-            bundle, rationale = self._implement(entry.record)
+            bundle, rationale = self._implement(
+                entry.record,
+                request_id=f"implementation:{entry.entry_id}:root",
+            )
             node = self._evaluate_node(entry.record, bundle, None, rationale)
             normalized = 0.5 + 0.5 * math.tanh(node.evaluation.priority() / 1000.0)
             entry.empirical_score = normalized
@@ -314,7 +471,14 @@ class HierarchicalCampaign:
             for _ in range(self.config.revisions_per_expansion):
                 if len(self.nodes) >= self.config.max_nodes:
                     break
-                bundle, rationale = self._implement(entry.record, parent=parent)
+                bundle, rationale = self._implement(
+                    entry.record,
+                    parent=parent,
+                    request_id=(
+                        f"implementation:{entry.entry_id}:"
+                        f"parent:{parent.node_id}:node:{len(self.nodes)}"
+                    ),
+                )
                 child = self._evaluate_node(
                     entry.record, bundle, parent.node_id, rationale
                 )
