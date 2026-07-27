@@ -9,6 +9,7 @@ from pathlib import Path
 from ai_scientist.constrained.bundle_evaluator import BundleEvaluation
 from ai_scientist.constrained.campaign import CampaignConfig, HierarchicalCampaign
 from ai_scientist.constrained.council import ResearchLens
+from ai_scientist.constrained.research_schema import ResearchPhase, ResearchRecord
 from launch_hierarchical_campaign import result_payload
 from tests.test_candidate_bundle import VALID
 from tests.test_diverse_selection import record
@@ -19,19 +20,69 @@ class FakeCouncil:
         del problem
         return [record(f"Hypothesis {lens.name}", lens.name, lens.instruction) for lens in lenses]
 
-    def review(self, value, problem):
+    def review(self, value, problem, *, on_progress=None):
         del problem
+        if on_progress is not None:
+            on_progress(value)
         return value
 
 
 class RejectingCouncil(FakeCouncil):
-    def review(self, value, problem):
+    def review(self, value, problem, *, on_progress=None):
         del problem
         value.novelty = replace(
             value.novelty,
             likely_incremental=True,
             novelty_score=0.2,
         )
+        if on_progress is not None:
+            on_progress(value)
+        return value
+
+
+class InterruptingCouncil:
+    def __init__(self):
+        self.template = record(
+            "Checkpointed hypothesis",
+            "estimation",
+            "Condition on teammate action and resume each scientific role.",
+        )
+        self.generate_calls = 0
+
+    def generate(self, problem, lenses):
+        del problem, lenses
+        self.generate_calls += 1
+        return [ResearchRecord(hypothesis=self.template.hypothesis)]
+
+    def review(self, value, problem, *, on_progress=None):
+        del problem
+        value.theory = self.template.theory
+        value.phase = ResearchPhase.THEORY
+        if on_progress is not None:
+            on_progress(value)
+        raise RuntimeError("simulated interruption after theory")
+
+
+class ResumingCouncil(InterruptingCouncil):
+    def generate(self, problem, lenses):
+        del problem, lenses
+        raise AssertionError("checkpointed hypothesis must not be generated again")
+
+    def review(self, value, problem, *, on_progress=None):
+        del problem
+        if value.theory != self.template.theory:
+            raise AssertionError("theory checkpoint was not restored")
+        value.falsification = self.template.falsification
+        value.phase = ResearchPhase.FALSIFICATION
+        if on_progress is not None:
+            on_progress(value)
+        value.experiment = self.template.experiment
+        value.phase = ResearchPhase.EXPERIMENT
+        if on_progress is not None:
+            on_progress(value)
+        value.novelty = self.template.novelty
+        if on_progress is not None:
+            on_progress(value)
         return value
 
 
@@ -39,8 +90,8 @@ class FakeImplementationModel:
     def __init__(self):
         self.calls = 0
 
-    def complete(self, *, role, system, prompt, schema):
-        del role, system, prompt, schema
+    def complete(self, *, role, system, prompt, schema, request_id=None):
+        del role, system, prompt, schema, request_id
         self.calls += 1
         files = dict(VALID)
         files["state.py"] = f"REVISION = {self.calls}\n"
@@ -192,6 +243,106 @@ class HierarchicalCampaignTest(unittest.TestCase):
                 journal["concepts"][0]["failed_checks"],
                 ["novelty_score", "material_novelty"],
             )
+
+    def test_resumes_after_a_role_boundary_without_regenerating_the_hypothesis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            first_council = InterruptingCouncil()
+            first = HierarchicalCampaign(
+                council=first_council,
+                implementation_model=FakeImplementationModel(),
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=output_dir,
+                    initial_capacity=1,
+                    max_nodes=1,
+                ),
+            )
+            lenses = (ResearchLens("estimation", "condition on teammate action"),)
+
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                first.run("test problem", lenses=lenses)
+
+            checkpoint_path = output_dir / "checkpoints" / "concept_0000.json"
+            checkpoint = json.loads(checkpoint_path.read_text())
+            self.assertIsNotNone(checkpoint["record"]["theory"])
+            self.assertIsNone(checkpoint["record"]["falsification"])
+            self.assertEqual(first_council.generate_calls, 1)
+
+            implementation_model = FakeImplementationModel()
+            resumed = HierarchicalCampaign(
+                council=ResumingCouncil(),
+                implementation_model=implementation_model,
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=output_dir,
+                    initial_capacity=1,
+                    max_nodes=1,
+                ),
+            )
+            best = resumed.run("test problem", lenses=lenses)
+
+            self.assertIsNotNone(best)
+            self.assertEqual(implementation_model.calls, 1)
+            restored = json.loads(checkpoint_path.read_text())
+            self.assertIsNotNone(restored["record"]["novelty"])
+            self.assertEqual(len(resumed.concepts), 1)
+
+    def test_resume_rejects_changed_problem_or_lenses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            campaign = HierarchicalCampaign(
+                council=FakeCouncil(),
+                implementation_model=FakeImplementationModel(),
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=output_dir,
+                    initial_capacity=1,
+                    max_nodes=1,
+                ),
+            )
+            campaign.run(
+                "original problem",
+                lenses=(ResearchLens("estimation", "condition on teammate action"),),
+            )
+
+            changed = HierarchicalCampaign(
+                council=FakeCouncil(),
+                implementation_model=FakeImplementationModel(),
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=output_dir,
+                    initial_capacity=1,
+                    max_nodes=1,
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                changed.run(
+                    "changed problem",
+                    lenses=(ResearchLens("estimation", "condition on teammate action"),),
+                )
+
+            changed_protocol = HierarchicalCampaign(
+                council=FakeCouncil(),
+                implementation_model=FakeImplementationModel(),
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=output_dir,
+                    initial_capacity=1,
+                    max_nodes=1,
+                    resume_protocol={"model": "different"},
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                changed_protocol.run(
+                    "original problem",
+                    lenses=(ResearchLens("estimation", "condition on teammate action"),),
+                )
 
     def test_rejects_using_heldout_evaluation_for_model_selection(self):
         with tempfile.TemporaryDirectory() as tmp:

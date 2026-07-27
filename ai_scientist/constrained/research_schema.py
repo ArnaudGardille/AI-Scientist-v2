@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -57,9 +58,10 @@ class ResearchHypothesis:
             raise ValueError("complexity must be low, medium, or high")
 
     def with_stable_id(self) -> "ResearchHypothesis":
-        payload = f"{self.family}\n{self.title}\n{self.mechanism}".encode()
-        stable_id = hashlib.sha256(payload).hexdigest()[:12]
         values = asdict(self)
+        values["hypothesis_id"] = ""
+        payload = json.dumps(values, sort_keys=True).encode("utf-8")
+        stable_id = hashlib.sha256(payload).hexdigest()[:24]
         values["hypothesis_id"] = stable_id
         return ResearchHypothesis(**values)
 
@@ -261,3 +263,62 @@ class ResearchRecord:
         payload = asdict(self)
         payload["phase"] = self.phase.value
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ResearchRecord":
+        """Restore a validated record from an atomic campaign checkpoint."""
+        hypothesis_payload = dict(payload["hypothesis"])
+        for key in ("assumptions", "predictions", "falsifiers"):
+            hypothesis_payload[key] = tuple(hypothesis_payload[key])
+
+        theory_payload = payload.get("theory")
+        if theory_payload is not None:
+            theory_payload = dict(theory_payload)
+            theory_payload["hidden_assumptions"] = tuple(
+                theory_payload["hidden_assumptions"]
+            )
+
+        falsification_payload = payload.get("falsification")
+        if falsification_payload is not None:
+            falsification_payload = dict(falsification_payload)
+            falsification_payload["counterexamples"] = tuple(
+                falsification_payload["counterexamples"]
+            )
+
+        experiment_payload = payload.get("experiment")
+        if experiment_payload is not None:
+            experiment_payload = dict(experiment_payload)
+            for key in ("manipulated_variables", "controls", "metrics", "confounds"):
+                experiment_payload[key] = tuple(experiment_payload[key])
+
+        novelty_payload = payload.get("novelty")
+        if novelty_payload is not None:
+            novelty_payload = dict(novelty_payload)
+            novelty_payload["nearest_methods"] = tuple(
+                novelty_payload["nearest_methods"]
+            )
+
+        hypothesis = ResearchHypothesis(**hypothesis_payload)
+        if hypothesis.with_stable_id().hypothesis_id != hypothesis.hypothesis_id:
+            raise ValueError("checkpoint hypothesis_id does not match canonical content")
+
+        record = cls(
+            hypothesis=hypothesis,
+            phase=ResearchPhase(payload.get("phase", ResearchPhase.HYPOTHESIS)),
+            theory=TheoryReview(**theory_payload) if theory_payload is not None else None,
+            falsification=(
+                FalsificationReview(**falsification_payload)
+                if falsification_payload is not None
+                else None
+            ),
+            experiment=(
+                ExperimentDesign(**experiment_payload)
+                if experiment_payload is not None
+                else None
+            ),
+            novelty=NoveltyReview(**novelty_payload) if novelty_payload is not None else None,
+            empirical_results=dict(payload.get("empirical_results", {})),
+            provenance=[dict(item) for item in payload.get("provenance", [])],
+        )
+        record.validate()
+        return record

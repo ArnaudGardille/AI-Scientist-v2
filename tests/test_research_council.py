@@ -6,8 +6,20 @@ from ai_scientist.constrained.council import ResearchCouncil, ResearchLens
 
 
 class FakeStructuredModel:
-    def complete(self, *, role, system, prompt, schema):
-        del system, prompt, schema
+    def __init__(self):
+        self.roles = []
+        self.accepted = []
+        self.rejected = []
+
+    def accept_response(self, request_id):
+        self.accepted.append(request_id)
+
+    def reject_response(self, request_id, reason):
+        self.rejected.append((request_id, reason))
+
+    def complete(self, *, role, system, prompt, schema, request_id=None):
+        del system, prompt, schema, request_id
+        self.roles.append(role)
         if role.startswith("hypothesis-generator"):
             return {
                 "title": "Conditional control variates for teammate drift",
@@ -97,6 +109,38 @@ class ResearchCouncilTest(unittest.TestCase):
                 "Off-policy teammate drift",
                 lenses=(ResearchLens("statistics", "derive estimator"),),
             )
+        self.assertEqual(
+            model.rejected,
+            [("hypothesis:statistics", "ValueError")],
+        )
+        self.assertEqual(model.accepted, [])
+
+    def test_review_resumes_after_a_completed_role_without_repeating_it(self):
+        model = FakeStructuredModel()
+        council = ResearchCouncil(model)
+        record = council.generate(
+            "Off-policy teammate drift",
+            lenses=(ResearchLens("statistics", "derive estimator"),),
+        )[0]
+
+        def interrupt_after_theory(current):
+            if current.theory is not None and current.falsification is None:
+                raise RuntimeError("interrupt after theory")
+
+        with self.assertRaisesRegex(RuntimeError, "interrupt after theory"):
+            council.review(
+                record,
+                "Off-policy teammate drift",
+                on_progress=interrupt_after_theory,
+            )
+
+        reviewed = council.review(record, "Off-policy teammate drift")
+
+        self.assertTrue(reviewed.conceptually_promotable())
+        self.assertEqual(model.roles.count("theorist"), 1)
+        self.assertEqual(model.roles.count("falsifier"), 1)
+        self.assertEqual(model.roles.count("experimentalist"), 1)
+        self.assertEqual(model.roles.count("novelty-reviewer"), 1)
 
 
 if __name__ == "__main__":

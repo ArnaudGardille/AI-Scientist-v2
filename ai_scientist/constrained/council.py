@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .research_schema import (
     ExperimentDesign,
@@ -148,6 +148,16 @@ class ResearchCouncil:
     def __init__(self, model: StructuredModel) -> None:
         self.model = model
 
+    def _accept(self, request_id: str) -> None:
+        accept = getattr(self.model, "accept_response", None)
+        if accept is not None:
+            accept(request_id)
+
+    def _reject(self, request_id: str, error: Exception) -> None:
+        reject = getattr(self.model, "reject_response", None)
+        if reject is not None:
+            reject(request_id, type(error).__name__)
+
     @staticmethod
     def _hypothesis(payload: dict[str, Any]) -> ResearchHypothesis:
         for key in ("assumptions", "predictions", "falsifiers"):
@@ -159,6 +169,7 @@ class ResearchCouncil:
     def generate(self, problem: str, lenses: tuple[ResearchLens, ...] = DEFAULT_LENSES) -> list[ResearchRecord]:
         records = []
         for lens in lenses:
+            request_id = f"hypothesis:{lens.name}"
             payload = self.model.complete(
                 role=f"hypothesis-generator:{lens.name}",
                 system=(
@@ -167,68 +178,164 @@ class ResearchCouncil:
                 ),
                 prompt=f"Problem:\n{problem}\n\nResearch lens:\n{lens.instruction}",
                 schema=HYPOTHESIS_SCHEMA,
+                request_id=request_id,
             )
-            record = ResearchRecord(hypothesis=self._hypothesis(payload))
-            record.provenance.append({"role": lens.name, "action": "generated"})
+            try:
+                record = ResearchRecord(hypothesis=self._hypothesis(payload))
+            except Exception as exc:
+                self._reject(request_id, exc)
+                raise
+            self._accept(request_id)
+            record.provenance.append(
+                {
+                    "role": lens.name,
+                    "action": "generated",
+                    "request_id": request_id,
+                }
+            )
             records.append(record)
         return records
 
-    def review(self, record: ResearchRecord, problem: str) -> ResearchRecord:
+    def review(
+        self,
+        record: ResearchRecord,
+        problem: str,
+        *,
+        on_progress: Callable[[ResearchRecord], None] | None = None,
+    ) -> ResearchRecord:
         hypothesis = record.hypothesis
         context = f"Problem:\n{problem}\n\nHypothesis:\n{hypothesis}"
 
-        theory = self.model.complete(
-            role="theorist",
-            system="Derive the claim and audit bias, variance, support, and hidden assumptions.",
-            prompt=context,
-            schema=THEORY_SCHEMA,
-        )
-        theory["hidden_assumptions"] = tuple(theory["hidden_assumptions"])
-        record.theory = TheoryReview(**theory)
-        record.theory.validate()
-        record.phase = ResearchPhase.THEORY
+        if record.theory is None:
+            request_id = f"concept:{hypothesis.hypothesis_id}:theorist"
+            theory = self.model.complete(
+                role="theorist",
+                system=(
+                    "Derive the claim and audit bias, variance, support, "
+                    "and hidden assumptions."
+                ),
+                prompt=context,
+                schema=THEORY_SCHEMA,
+                request_id=request_id,
+            )
+            try:
+                theory["hidden_assumptions"] = tuple(theory["hidden_assumptions"])
+                record.theory = TheoryReview(**theory)
+                record.theory.validate()
+            except Exception as exc:
+                record.theory = None
+                self._reject(request_id, exc)
+                raise
+            self._accept(request_id)
+            record.phase = ResearchPhase.THEORY
+            record.provenance.append(
+                {
+                    "role": "theorist",
+                    "action": "reviewed",
+                    "request_id": request_id,
+                }
+            )
+            if on_progress is not None:
+                on_progress(record)
 
-        falsification = self.model.complete(
-            role="falsifier",
-            system="Try to refute the mechanism with concrete counterexamples and one decisive test.",
-            prompt=context + f"\n\nTheory review:\n{record.theory}",
-            schema=FALSIFICATION_SCHEMA,
-        )
-        falsification["counterexamples"] = tuple(falsification["counterexamples"])
-        record.falsification = FalsificationReview(**falsification)
-        record.falsification.validate()
-        record.phase = ResearchPhase.FALSIFICATION
+        if record.falsification is None:
+            request_id = f"concept:{hypothesis.hypothesis_id}:falsifier"
+            falsification = self.model.complete(
+                role="falsifier",
+                system=(
+                    "Try to refute the mechanism with concrete counterexamples "
+                    "and one decisive test."
+                ),
+                prompt=context + f"\n\nTheory review:\n{record.theory}",
+                schema=FALSIFICATION_SCHEMA,
+                request_id=request_id,
+            )
+            try:
+                falsification["counterexamples"] = tuple(
+                    falsification["counterexamples"]
+                )
+                record.falsification = FalsificationReview(**falsification)
+                record.falsification.validate()
+            except Exception as exc:
+                record.falsification = None
+                self._reject(request_id, exc)
+                raise
+            self._accept(request_id)
+            record.phase = ResearchPhase.FALSIFICATION
+            record.provenance.append(
+                {
+                    "role": "falsifier",
+                    "action": "reviewed",
+                    "request_id": request_id,
+                }
+            )
+            if on_progress is not None:
+                on_progress(record)
 
-        experiment = self.model.complete(
-            role="experimentalist",
-            system=(
-                "Design the cheapest experiment that distinguishes the proposed mechanism "
-                "from plausible alternatives. Metrics and rejection rules must be numeric."
-            ),
-            prompt=context + f"\n\nFalsification review:\n{record.falsification}",
-            schema=EXPERIMENT_SCHEMA,
-        )
-        for key in ("manipulated_variables", "controls", "metrics", "confounds"):
-            experiment[key] = tuple(experiment[key])
-        record.experiment = ExperimentDesign(**experiment)
-        record.experiment.validate()
-        record.phase = ResearchPhase.EXPERIMENT
+        if record.experiment is None:
+            request_id = f"concept:{hypothesis.hypothesis_id}:experimentalist"
+            experiment = self.model.complete(
+                role="experimentalist",
+                system=(
+                    "Design the cheapest experiment that distinguishes the proposed mechanism "
+                    "from plausible alternatives. Metrics and rejection rules must be numeric."
+                ),
+                prompt=context + f"\n\nFalsification review:\n{record.falsification}",
+                schema=EXPERIMENT_SCHEMA,
+                request_id=request_id,
+            )
+            try:
+                for key in ("manipulated_variables", "controls", "metrics", "confounds"):
+                    experiment[key] = tuple(experiment[key])
+                record.experiment = ExperimentDesign(**experiment)
+                record.experiment.validate()
+            except Exception as exc:
+                record.experiment = None
+                self._reject(request_id, exc)
+                raise
+            self._accept(request_id)
+            record.phase = ResearchPhase.EXPERIMENT
+            record.provenance.append(
+                {
+                    "role": "experimentalist",
+                    "action": "reviewed",
+                    "request_id": request_id,
+                }
+            )
+            if on_progress is not None:
+                on_progress(record)
 
-        novelty = self.model.complete(
-            role="novelty-reviewer",
-            system=(
-                "Identify nearest prior methods and whether the claimed distinction is material. "
-                "Be conservative; this review cannot override empirical evidence."
-            ),
-            prompt=context,
-            schema=NOVELTY_SCHEMA,
-        )
-        novelty["nearest_methods"] = tuple(novelty["nearest_methods"])
-        record.novelty = NoveltyReview(**novelty)
-        record.novelty.validate()
-        record.provenance.extend(
-            {"role": role, "action": "reviewed"}
-            for role in ("theorist", "falsifier", "experimentalist", "novelty-reviewer")
-        )
+        if record.novelty is None:
+            request_id = f"concept:{hypothesis.hypothesis_id}:novelty"
+            novelty = self.model.complete(
+                role="novelty-reviewer",
+                system=(
+                    "Identify nearest prior methods and whether the claimed distinction "
+                    "is material. Be conservative; this review cannot override "
+                    "empirical evidence."
+                ),
+                prompt=context,
+                schema=NOVELTY_SCHEMA,
+                request_id=request_id,
+            )
+            try:
+                novelty["nearest_methods"] = tuple(novelty["nearest_methods"])
+                record.novelty = NoveltyReview(**novelty)
+                record.novelty.validate()
+            except Exception as exc:
+                record.novelty = None
+                self._reject(request_id, exc)
+                raise
+            self._accept(request_id)
+            record.provenance.append(
+                {
+                    "role": "novelty-reviewer",
+                    "action": "reviewed",
+                    "request_id": request_id,
+                }
+            )
+            if on_progress is not None:
+                on_progress(record)
+
         record.validate()
         return record

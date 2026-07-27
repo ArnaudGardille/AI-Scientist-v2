@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from ai_scientist.constrained.bundle_evaluator import (
@@ -45,12 +48,42 @@ def _evaluator(raw: dict, stages: tuple[EvaluationStage, ...]) -> WorktreeBundle
     ))
 
 
+def _hash_git_paths(repository: Path, commit_sha: str, paths: list[str]) -> str:
+    tree = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            commit_sha,
+            "--",
+            *sorted(paths),
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout
+    return hashlib.sha256(tree).hexdigest()
+
+
 def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
     raw = json.loads(config_path.read_text(encoding="utf-8"))
+    repository = Path(raw["repository"]).resolve()
+    base_ref_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", f"{raw['base_ref']}^{{commit}}"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    resolved_raw = {**raw, "base_ref": base_ref_sha}
     stages = _stages(raw["stages"])
-    evaluator = _evaluator(raw, stages)
+    evaluator = _evaluator(resolved_raw, stages)
     final_evaluator = (
-        _evaluator(raw, _stages(raw["final_stages"])) if raw.get("final_stages") else None
+        _evaluator(resolved_raw, _stages(raw["final_stages"]))
+        if raw.get("final_stages")
+        else None
     )
     model = ClaudeCodeStructuredModel(
         model=model_name.removeprefix("claude-code/"),
@@ -62,6 +95,27 @@ def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
         telemetry_path=Path(raw["output_dir"]).resolve() / "model_telemetry.json",
     )
     campaign_raw = raw.get("campaign", {})
+    claude_version = subprocess.run(
+        ["claude", "--version"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    resume_protocol = {
+        "model_name": model_name,
+        "claude_cli_version": claude_version,
+        "python_version": sys.version,
+        "target_base_ref_sha": base_ref_sha,
+        "frozen_snapshot_sha256": _hash_git_paths(
+            repository,
+            base_ref_sha,
+            raw["frozen_paths"],
+        ),
+        "launcher_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "configuration": {
+            key: value for key, value in raw.items() if key != "output_dir"
+        },
+    }
     return HierarchicalCampaign(
         council=ResearchCouncil(model),
         implementation_model=model,
@@ -78,6 +132,7 @@ def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
             experiment_stage_name=campaign_raw.get(
                 "experiment_stage_name", "mechanism"
             ),
+            resume_protocol=resume_protocol,
         ),
     )
 
@@ -111,11 +166,11 @@ def main() -> None:
     args = parser.parse_args()
     raw = json.loads(args.config.read_text(encoding="utf-8"))
     problem = Path(raw["task_context_file"]).read_text(encoding="utf-8")
-    campaign = load_campaign(args.config, args.model)
     lenses = tuple(
         ResearchLens(item["name"], item["instruction"])
         for item in raw.get("research_lenses", [])
     )
+    campaign = load_campaign(args.config, args.model)
     best = campaign.run(problem, lenses=lenses) if lenses else campaign.run(problem)
     print(json.dumps(result_payload(best)))
 
