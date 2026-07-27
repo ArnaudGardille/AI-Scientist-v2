@@ -55,6 +55,11 @@ def load_campaign(config_path: Path, model_name: str) -> HierarchicalCampaign:
     model = ClaudeCodeStructuredModel(
         model=model_name.removeprefix("claude-code/"),
         timeout_seconds=raw.get("model_timeout_seconds", 900),
+        max_calls=raw.get("max_model_calls", 128),
+        max_wallclock_seconds=raw.get("max_campaign_wallclock_seconds", 21_600),
+        max_retries=raw.get("model_max_retries", 2),
+        retry_base_seconds=raw.get("model_retry_base_seconds", 1.0),
+        telemetry_path=Path(raw["output_dir"]).resolve() / "model_telemetry.json",
     )
     campaign_raw = raw.get("campaign", {})
     return HierarchicalCampaign(
