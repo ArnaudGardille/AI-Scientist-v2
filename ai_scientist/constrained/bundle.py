@@ -11,12 +11,19 @@ ALLOWED_FILES = frozenset({"__init__.py", "estimator.py", "sampler.py", "target_
 REQUIRED_FILES = frozenset({"__init__.py", "estimator.py", "sampler.py"})
 ALLOWED_IMPORT_ROOTS = frozenset({
     "__future__", "dataclasses", "typing", "math", "numpy", "jax", "flax", "chex",
-    "conformal_marl",
 })
+ALLOWED_PROJECT_IMPORTS = frozenset({
+    "conformal_marl.autoresearch.api",
+    "conformal_marl.conformal",
+    "conformal_marl.replay",
+    "conformal_marl.samplers",
+})
+ALLOWED_RELATIVE_IMPORTS = frozenset({"estimator", "sampler", "state", "target_policy"})
 DENIED_CALLS = frozenset({
     "open", "exec", "eval", "compile", "__import__", "input", "breakpoint",
     "system", "popen", "run", "call", "check_call", "check_output",
     "load", "save", "savez", "savetxt", "fromfile", "tofile",
+    "getattr", "setattr", "delattr", "globals", "locals", "vars", "dir",
 })
 
 
@@ -53,15 +60,32 @@ class CandidateBundle:
             tree = ast.parse(content, filename=name)
         except SyntaxError as exc:
             raise BundleValidationError(f"invalid Python in {name}: {exc}") from exc
+
+        def allowed_absolute(module: str) -> bool:
+            root = module.split(".", 1)[0]
+            if root in ALLOWED_IMPORT_ROOTS:
+                return True
+            return module in ALLOWED_PROJECT_IMPORTS
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                roots = [alias.name.split(".", 1)[0] for alias in node.names]
-                if any(root not in ALLOWED_IMPORT_ROOTS for root in roots):
-                    raise BundleValidationError(f"forbidden import in {name}: {roots}")
-            elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                root = (node.module or "").split(".", 1)[0]
-                if root not in ALLOWED_IMPORT_ROOTS:
-                    raise BundleValidationError(f"forbidden import in {name}: {root}")
+                modules = [alias.name for alias in node.names]
+                if any(not allowed_absolute(module) for module in modules):
+                    raise BundleValidationError(f"forbidden import in {name}: {modules}")
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level:
+                    if node.level != 1 or module not in ALLOWED_RELATIVE_IMPORTS:
+                        raise BundleValidationError(
+                            f"forbidden relative import in {name}: "
+                            f"{'.' * node.level}{module}"
+                        )
+                elif not allowed_absolute(module):
+                    raise BundleValidationError(f"forbidden import in {name}: {module}")
+                if any(alias.name.startswith("_") for alias in node.names):
+                    raise BundleValidationError(
+                        f"private imports are forbidden in {name}"
+                    )
             elif isinstance(node, ast.Call):
                 function = node.func
                 called = function.id if isinstance(function, ast.Name) else (
@@ -69,8 +93,26 @@ class CandidateBundle:
                 )
                 if called in DENIED_CALLS:
                     raise BundleValidationError(f"forbidden call in {name}: {called}")
-            elif isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-                raise BundleValidationError(f"dunder attribute access is forbidden in {name}")
+                if called == "register_sampler":
+                    valid_registration = (
+                        node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and node.args[0].value == "autoresearch_candidate"
+                    )
+                    if not valid_registration:
+                        raise BundleValidationError(
+                            "candidate may register only 'autoresearch_candidate'"
+                        )
+            elif isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+                raise BundleValidationError(
+                    f"private attribute access is forbidden in {name}: {node.attr}"
+                )
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(target, ast.Attribute) for target in targets):
+                    raise BundleValidationError(
+                        f"attribute mutation is forbidden in {name}"
+                    )
 
     @classmethod
     def from_directory(cls, directory: Path) -> "CandidateBundle":
