@@ -99,7 +99,17 @@ class ClaudeCodeStructuredModel:
         lowered = detail.lower()
         return any(
             marker in lowered
-            for marker in ("rate limit", "overloaded", "temporarily unavailable", "timeout")
+            for marker in (
+                "rate limit",
+                "overloaded",
+                "temporarily unavailable",
+                "timeout",
+                "connectionrefused",
+                "connection refused",
+                "unable to connect",
+                "network error",
+                "econnreset",
+            )
         )
 
     def complete(
@@ -123,6 +133,7 @@ class ClaudeCodeStructuredModel:
             for attempt in range(self.max_retries + 1):
                 self._reserve_call()
                 record["attempts"] = attempt + 1
+                self._write_telemetry()
                 try:
                     result = subprocess.run(
                         [
