@@ -179,19 +179,83 @@ class ResearchRecord:
 
     def conceptually_promotable(self) -> bool:
         """Hard pre-code gate; never substitutes for numeric empirical evaluation."""
+        return bool(self.conceptual_gate()["promotable"])
+
+    def conceptual_gate(self) -> dict[str, Any]:
+        """Return the complete, machine-readable pre-code gate decision."""
         self.validate()
-        return bool(
-            self.theory
-            and self.theory.sound
-            and self.theory.soundness_score >= 0.6
-            and self.falsification
-            and not self.falsification.fatal
-            and self.falsification.robustness_score >= 0.4
-            and self.experiment
-            and self.novelty
-            and self.novelty.novelty_score >= 0.35
-            and not self.novelty.likely_incremental
+        checks = (
+            {
+                "name": "theory_present",
+                "passed": self.theory is not None,
+                "observed": self.theory is not None,
+                "required": True,
+            },
+            {
+                "name": "theory_sound",
+                "passed": bool(self.theory and self.theory.sound),
+                "observed": self.theory.sound if self.theory else None,
+                "required": True,
+            },
+            {
+                "name": "soundness_score",
+                "passed": bool(self.theory and self.theory.soundness_score >= 0.6),
+                "observed": self.theory.soundness_score if self.theory else None,
+                "required": ">= 0.6",
+            },
+            {
+                "name": "falsification_present",
+                "passed": self.falsification is not None,
+                "observed": self.falsification is not None,
+                "required": True,
+            },
+            {
+                "name": "no_fatal_counterexample",
+                "passed": bool(self.falsification and not self.falsification.fatal),
+                "observed": self.falsification.fatal if self.falsification else None,
+                "required": "fatal is false",
+            },
+            {
+                "name": "robustness_score",
+                "passed": bool(
+                    self.falsification and self.falsification.robustness_score >= 0.4
+                ),
+                "observed": (
+                    self.falsification.robustness_score if self.falsification else None
+                ),
+                "required": ">= 0.4",
+            },
+            {
+                "name": "experiment_present",
+                "passed": self.experiment is not None,
+                "observed": self.experiment is not None,
+                "required": True,
+            },
+            {
+                "name": "novelty_present",
+                "passed": self.novelty is not None,
+                "observed": self.novelty is not None,
+                "required": True,
+            },
+            {
+                "name": "novelty_score",
+                "passed": bool(self.novelty and self.novelty.novelty_score >= 0.35),
+                "observed": self.novelty.novelty_score if self.novelty else None,
+                "required": ">= 0.35",
+            },
+            {
+                "name": "material_novelty",
+                "passed": bool(self.novelty and not self.novelty.likely_incremental),
+                "observed": self.novelty.likely_incremental if self.novelty else None,
+                "required": "likely_incremental is false",
+            },
         )
+        failed_checks = [check["name"] for check in checks if not check["passed"]]
+        return {
+            "promotable": not failed_checks,
+            "failed_checks": failed_checks,
+            "checks": list(checks),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

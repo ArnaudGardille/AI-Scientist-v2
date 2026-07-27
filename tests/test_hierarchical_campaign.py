@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from ai_scientist.constrained.bundle_evaluator import BundleEvaluation
@@ -19,6 +21,17 @@ class FakeCouncil:
 
     def review(self, value, problem):
         del problem
+        return value
+
+
+class RejectingCouncil(FakeCouncil):
+    def review(self, value, problem):
+        del problem
+        value.novelty = replace(
+            value.novelty,
+            likely_incremental=True,
+            novelty_score=0.2,
+        )
         return value
 
 
@@ -138,6 +151,47 @@ class HierarchicalCampaignTest(unittest.TestCase):
             self.assertEqual({node.record.hypothesis.family for node in campaign.nodes[:2]}, {
                 "estimation", "exploration"
             })
+
+    def test_rejected_concepts_are_persisted_with_explicit_gate_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            implementation_model = FakeImplementationModel()
+            campaign = HierarchicalCampaign(
+                council=RejectingCouncil(),
+                implementation_model=implementation_model,
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=Path(tmp),
+                    initial_capacity=1,
+                    max_nodes=1,
+                ),
+            )
+
+            best = campaign.run(
+                "test problem",
+                lenses=(ResearchLens("estimation", "condition on teammate action"),),
+            )
+
+            self.assertIsNone(best)
+            self.assertEqual(implementation_model.calls, 0)
+            concept_paths = list((Path(tmp) / "concepts").glob("*.json"))
+            self.assertEqual(len(concept_paths), 1)
+            concept = json.loads(concept_paths[0].read_text())
+            self.assertFalse(concept["gate"]["promotable"])
+            self.assertEqual(
+                concept["gate"]["failed_checks"],
+                ["novelty_score", "material_novelty"],
+            )
+            self.assertIn("record", concept)
+            self.assertEqual(concept["record"]["novelty"]["novelty_score"], 0.2)
+
+            journal = json.loads((Path(tmp) / "journal.json").read_text())
+            self.assertEqual(journal["nodes"], [])
+            self.assertEqual(len(journal["concepts"]), 1)
+            self.assertEqual(
+                journal["concepts"][0]["failed_checks"],
+                ["novelty_score", "material_novelty"],
+            )
 
     def test_rejects_using_heldout_evaluation_for_model_selection(self):
         with tempfile.TemporaryDirectory() as tmp:

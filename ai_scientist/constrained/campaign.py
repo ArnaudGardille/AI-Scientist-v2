@@ -75,6 +75,13 @@ class CampaignNode:
     final_evaluation: BundleEvaluation | None = None
 
 
+@dataclass(frozen=True)
+class ReviewedConcept:
+    record: ResearchRecord
+    gate: dict
+    objectives: ResearchObjectives
+
+
 class HierarchicalCampaign:
     def __init__(
         self,
@@ -96,6 +103,7 @@ class HierarchicalCampaign:
             max_per_family=config.max_per_family,
         )
         self.nodes: list[CampaignNode] = []
+        self.concepts: list[ReviewedConcept] = []
 
     @staticmethod
     def _write_json(path: Path, payload: dict) -> None:
@@ -195,6 +203,19 @@ class HierarchicalCampaign:
             )
         node.bundle.materialize(directory / "candidate")
 
+    def _save_concept(self, concept: ReviewedConcept, index: int) -> None:
+        hypothesis_id = concept.record.hypothesis.hypothesis_id
+        path = self.config.output_dir / "concepts" / f"{index:04d}_{hypothesis_id}.json"
+        self._write_json(
+            path,
+            {
+                "concept_index": index,
+                "record": concept.record.to_dict(),
+                "gate": concept.gate,
+                "objectives": asdict(concept.objectives),
+            },
+        )
+
     def _save_journal(self) -> None:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         best = self.best_node()
@@ -205,6 +226,18 @@ class HierarchicalCampaign:
                 and best.final_evaluation is not None
                 and best.final_evaluation.complete
             ),
+            "concepts": [
+                {
+                    "concept_index": index,
+                    "hypothesis_id": concept.record.hypothesis.hypothesis_id,
+                    "title": concept.record.hypothesis.title,
+                    "family": concept.record.hypothesis.family,
+                    "promotable": concept.gate["promotable"],
+                    "failed_checks": concept.gate["failed_checks"],
+                    "objectives": asdict(concept.objectives),
+                }
+                for index, concept in enumerate(self.concepts)
+            ],
             "nodes": [
                 {
                     "node_id": node.node_id,
@@ -249,8 +282,18 @@ class HierarchicalCampaign:
         generated = self.council.generate(problem, lenses=lenses)
         for record in generated:
             reviewed = self.council.review(record, problem)
-            if reviewed.conceptually_promotable():
-                self.archive.add(ArchiveEntry(reviewed, self._objectives(reviewed)))
+            gate = reviewed.conceptual_gate()
+            objectives = self._objectives(reviewed)
+            concept = ReviewedConcept(
+                record=copy.deepcopy(reviewed),
+                gate=copy.deepcopy(gate),
+                objectives=objectives,
+            )
+            self.concepts.append(concept)
+            self._save_concept(concept, len(self.concepts) - 1)
+            self._save_journal()
+            if gate["promotable"]:
+                self.archive.add(ArchiveEntry(reviewed, objectives))
 
         entries = self.archive.frontier(self.config.initial_capacity)
         for entry in entries:
