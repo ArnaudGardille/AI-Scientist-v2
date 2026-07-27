@@ -233,9 +233,7 @@ class HierarchicalCampaign:
         # Archive records describe conceptual hypotheses. Each implementation node owns an
         # immutable-at-creation snapshot so later revisions cannot rewrite earlier provenance.
         node_record = copy.deepcopy(record)
-        node_record.phase = (
-            ResearchPhase.VALIDATION if evaluation.complete else ResearchPhase.SCREENING
-        )
+        node_record.phase = ResearchPhase.SCREENING
         node_record.empirical_results = copy.deepcopy(evaluation.stage_results)
         node = CampaignNode(
             node_id=len(self.nodes),
