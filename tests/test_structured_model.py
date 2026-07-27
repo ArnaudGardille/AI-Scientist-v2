@@ -86,6 +86,33 @@ class ClaudeCodeStructuredModelTest(unittest.TestCase):
 
     @patch("ai_scientist.constrained.structured_model.shutil.which", return_value="/bin/claude")
     @patch("ai_scientist.constrained.structured_model.subprocess.run")
+    def test_retries_connection_refused_transport_error(self, run, _which):
+        run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["claude"],
+                returncode=1,
+                stdout="",
+                stderr="API Error: Unable to connect to API (ConnectionRefused)",
+            ),
+            subprocess.CompletedProcess(
+                args=["claude"],
+                returncode=0,
+                stdout=json.dumps({"structured_output": {"ok": True}}),
+                stderr="",
+            ),
+        ]
+        model = ClaudeCodeStructuredModel(max_retries=1, retry_base_seconds=0)
+        payload = model.complete(
+            role="test",
+            system="test",
+            prompt="test",
+            schema={"type": "object"},
+        )
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(run.call_count, 2)
+
+    @patch("ai_scientist.constrained.structured_model.shutil.which", return_value="/bin/claude")
+    @patch("ai_scientist.constrained.structured_model.subprocess.run")
     def test_enforces_global_model_call_budget(self, run, _which):
         run.return_value = subprocess.CompletedProcess(
             args=["claude"],
@@ -115,7 +142,7 @@ class ClaudeCodeStructuredModelTest(unittest.TestCase):
                 del args, kwargs
                 records = json.loads(telemetry.read_text(encoding="utf-8"))
                 self.assertEqual(records[-1]["status"], "pending")
-                self.assertEqual(records[-1]["attempts"], 0)
+                self.assertEqual(records[-1]["attempts"], 1)
                 return subprocess.CompletedProcess(
                     args=["claude"],
                     returncode=0,
