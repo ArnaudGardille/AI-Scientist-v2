@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -9,7 +10,11 @@ from pathlib import Path
 from ai_scientist.constrained.bundle_evaluator import BundleEvaluation
 from ai_scientist.constrained.campaign import CampaignConfig, HierarchicalCampaign
 from ai_scientist.constrained.council import ResearchLens
-from ai_scientist.constrained.research_schema import ResearchPhase, ResearchRecord
+from ai_scientist.constrained.research_schema import (
+    ResearchPhase,
+    ResearchRecord,
+    RevisionAudit,
+)
 from launch_hierarchical_campaign import result_payload
 from tests.test_candidate_bundle import VALID
 from tests.test_diverse_selection import record
@@ -38,6 +43,54 @@ class RejectingCouncil(FakeCouncil):
         if on_progress is not None:
             on_progress(value)
         return value
+
+
+class RevisionCouncil(RejectingCouncil):
+    def revise(
+        self,
+        parent,
+        problem,
+        *,
+        failed_checks,
+        revision_index,
+    ):
+        del problem, failed_checks, revision_index
+        revised = record(
+            "Revised conditional estimator",
+            parent.hypothesis.family,
+            "Use a support-aware conditional control variate with an explicit fallback.",
+        )
+        revised.revision_audit = RevisionAudit(
+            preserves_objective=True,
+            substantive_mechanism_change=True,
+            addresses_reviewed_failure=True,
+            objective_analysis="The child retains target-policy replay efficiency as its objective.",
+            mechanism_analysis="The child adds a support-aware control variate and fallback mechanism.",
+            failure_resolution_analysis="The fallback directly resolves the reviewed support failure.",
+        )
+        revised.provenance.append(
+            {
+                "role": "concept-reviser",
+                "action": "revised",
+                "request_id": "revision:test",
+                "parent_hypothesis_id": parent.hypothesis.hypothesis_id,
+            }
+        )
+        return revised
+
+    def review(self, value, problem, *, on_progress=None):
+        if value.hypothesis.title == "Revised conditional estimator":
+            return FakeCouncil.review(
+                self,
+                value,
+                problem,
+                on_progress=on_progress,
+            )
+        return super().review(
+            value,
+            problem,
+            on_progress=on_progress,
+        )
 
 
 class InterruptingCouncil:
@@ -290,6 +343,47 @@ class HierarchicalCampaignTest(unittest.TestCase):
             restored = json.loads(checkpoint_path.read_text())
             self.assertIsNotNone(restored["record"]["novelty"])
             self.assertEqual(len(resumed.concepts), 1)
+
+    def test_bounded_concept_revision_repasses_the_gate_before_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            implementation_model = FakeImplementationModel()
+            campaign = HierarchicalCampaign(
+                council=RevisionCouncil(),
+                implementation_model=implementation_model,
+                evaluator=FakeEvaluator(),
+                final_evaluator=None,
+                config=CampaignConfig(
+                    output_dir=Path(tmp),
+                    initial_capacity=1,
+                    max_nodes=1,
+                    max_concept_revisions=1,
+                ),
+            )
+
+            best = campaign.run(
+                "test problem",
+                lenses=(ResearchLens("estimation", "condition on teammate action"),),
+            )
+
+            self.assertIsNotNone(best)
+            self.assertEqual(implementation_model.calls, 1)
+            self.assertEqual(len(campaign.concepts), 2)
+            self.assertFalse(campaign.concepts[0].gate["promotable"])
+            self.assertTrue(campaign.concepts[1].gate["promotable"])
+            journal = json.loads((Path(tmp) / "journal.json").read_text())
+            self.assertEqual(
+                journal["concepts"][1]["parent_hypothesis_id"],
+                campaign.concepts[0].record.hypothesis.hypothesis_id,
+            )
+            failed_audit = copy.deepcopy(campaign.concepts[1].record)
+            failed_audit.revision_audit = replace(
+                failed_audit.revision_audit,
+                addresses_reviewed_failure=False,
+            )
+            self.assertIn(
+                "revision_addresses_failure",
+                failed_audit.conceptual_gate()["failed_checks"],
+            )
 
     def test_resume_rejects_changed_problem_or_lenses(self):
         with tempfile.TemporaryDirectory() as tmp:

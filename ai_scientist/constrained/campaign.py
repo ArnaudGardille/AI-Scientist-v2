@@ -52,6 +52,7 @@ class CampaignConfig:
     min_conceptual_distance: float = 0.2
     finalist_count: int = 1
     experiment_stage_name: str = "mechanism"
+    max_concept_revisions: int = 0
     resume_protocol: dict = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -66,6 +67,8 @@ class CampaignConfig:
             )
         if not self.experiment_stage_name.strip():
             raise ValueError("experiment_stage_name must be non-empty")
+        if not 0 <= self.max_concept_revisions <= 5:
+            raise ValueError("max_concept_revisions must be in [0, 5]")
         try:
             json.dumps(self.resume_protocol, sort_keys=True)
         except (TypeError, ValueError) as exc:
@@ -273,6 +276,21 @@ class HierarchicalCampaign:
             },
         )
 
+    def _register_concept(self, reviewed: ResearchRecord) -> ReviewedConcept:
+        gate = reviewed.conceptual_gate()
+        objectives = self._objectives(reviewed)
+        concept = ReviewedConcept(
+            record=copy.deepcopy(reviewed),
+            gate=copy.deepcopy(gate),
+            objectives=objectives,
+        )
+        self.concepts.append(concept)
+        self._save_concept(concept, len(self.concepts) - 1)
+        self._save_journal()
+        if gate["promotable"]:
+            self.archive.add(ArchiveEntry(reviewed, objectives))
+        return concept
+
     def _checkpoint_path(self, index: int) -> Path:
         return self.config.output_dir / "checkpoints" / f"concept_{index:04d}.json"
 
@@ -349,6 +367,37 @@ class HierarchicalCampaign:
         self._save_checkpoint(index, lens, record)
         return record
 
+    def _revise_or_resume(
+        self,
+        problem: str,
+        index: int,
+        parent: ReviewedConcept,
+        revision_index: int,
+    ) -> tuple[ResearchRecord, ResearchLens]:
+        parent_id = parent.record.hypothesis.hypothesis_id
+        lens = ResearchLens(
+            name=f"revision-{parent_id}-{revision_index}",
+            instruction="Repair a reviewed conceptual mechanism without changing its objective.",
+        )
+        checkpoint_path = self._checkpoint_path(index)
+        if checkpoint_path.exists():
+            payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if payload.get("concept_index") != index or payload.get("lens") != asdict(lens):
+                raise ValueError(f"invalid conceptual checkpoint at {checkpoint_path}")
+            return ResearchRecord.from_dict(payload["record"]), lens
+
+        revise = getattr(self.council, "revise", None)
+        if revise is None:
+            raise TypeError("research council does not support conceptual revision")
+        record = revise(
+            parent.record,
+            problem,
+            failed_checks=tuple(parent.gate["failed_checks"]),
+            revision_index=revision_index,
+        )
+        self._save_checkpoint(index, lens, record)
+        return record, lens
+
     def _save_journal(self) -> None:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         best = self.best_node()
@@ -365,6 +414,14 @@ class HierarchicalCampaign:
                     "hypothesis_id": concept.record.hypothesis.hypothesis_id,
                     "title": concept.record.hypothesis.title,
                     "family": concept.record.hypothesis.family,
+                    "parent_hypothesis_id": next(
+                        (
+                            item["parent_hypothesis_id"]
+                            for item in concept.record.provenance
+                            if "parent_hypothesis_id" in item
+                        ),
+                        None,
+                    ),
                     "promotable": concept.gate["promotable"],
                     "failed_checks": concept.gate["failed_checks"],
                     "objectives": asdict(concept.objectives),
@@ -434,18 +491,33 @@ class HierarchicalCampaign:
                 ),
             )
             self._save_checkpoint(index, lens, reviewed)
-            gate = reviewed.conceptual_gate()
-            objectives = self._objectives(reviewed)
-            concept = ReviewedConcept(
-                record=copy.deepcopy(reviewed),
-                gate=copy.deepcopy(gate),
-                objectives=objectives,
+            self._register_concept(reviewed)
+
+        rejected = sorted(
+            (concept for concept in self.concepts if not concept.gate["promotable"]),
+            key=lambda concept: sum(concept.objectives.values()),
+            reverse=True,
+        )
+        for revision_index, parent in enumerate(
+            rejected[: self.config.max_concept_revisions]
+        ):
+            checkpoint_index = len(lenses) + revision_index
+            revised, lens = self._revise_or_resume(
+                problem,
+                checkpoint_index,
+                parent,
+                revision_index,
             )
-            self.concepts.append(concept)
-            self._save_concept(concept, len(self.concepts) - 1)
-            self._save_journal()
-            if gate["promotable"]:
-                self.archive.add(ArchiveEntry(reviewed, objectives))
+            reviewed = self.council.review(
+                revised,
+                problem,
+                on_progress=(
+                    lambda current, i=checkpoint_index, item=lens:
+                    self._save_checkpoint(i, item, current)
+                ),
+            )
+            self._save_checkpoint(checkpoint_index, lens, reviewed)
+            self._register_concept(reviewed)
 
         entries = self.archive.frontier(self.config.initial_capacity)
         for entry in entries:

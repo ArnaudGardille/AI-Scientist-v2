@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
 from .research_schema import (
@@ -12,6 +13,7 @@ from .research_schema import (
     ResearchHypothesis,
     ResearchPhase,
     ResearchRecord,
+    RevisionAudit,
     TheoryReview,
 )
 from .structured_model import StructuredModel
@@ -128,6 +130,27 @@ NOVELTY_SCHEMA = {
     "additionalProperties": False,
 }
 
+REVISION_AUDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "preserves_objective": {"type": "boolean"},
+        "substantive_mechanism_change": {"type": "boolean"},
+        "addresses_reviewed_failure": {"type": "boolean"},
+        "objective_analysis": {"type": "string"},
+        "mechanism_analysis": {"type": "string"},
+        "failure_resolution_analysis": {"type": "string"},
+    },
+    "required": [
+        "preserves_objective",
+        "substantive_mechanism_change",
+        "addresses_reviewed_failure",
+        "objective_analysis",
+        "mechanism_analysis",
+        "failure_resolution_analysis",
+    ],
+    "additionalProperties": False,
+}
+
 
 @dataclass(frozen=True)
 class ResearchLens:
@@ -142,6 +165,19 @@ DEFAULT_LENSES = (
     ResearchLens("coverage-exploration", "Use uncertainty or coverage without starving support."),
     ResearchLens("robust-control", "Optimize against bounded policy drift or misspecification."),
 )
+
+QUALITATIVE_GATE_FEEDBACK = {
+    "theory_present": "The proposal lacks a complete mathematical analysis.",
+    "theory_sound": "The theoretical derivation was judged unsound.",
+    "soundness_score": "The theoretical support was judged insufficient.",
+    "falsification_present": "The proposal lacks an adversarial falsification analysis.",
+    "no_fatal_counterexample": "The falsifier identified a fatal counterexample.",
+    "robustness_score": "The mechanism was not robust to the reviewed counterexamples.",
+    "experiment_present": "The proposal lacks a decisive controlled experiment.",
+    "novelty_present": "The proposal lacks a comparison with its nearest methods.",
+    "novelty_score": "The material distinction from prior methods was insufficient.",
+    "material_novelty": "The proposal was judged incremental rather than materially new.",
+}
 
 
 class ResearchCouncil:
@@ -195,6 +231,118 @@ class ResearchCouncil:
             )
             records.append(record)
         return records
+
+    def revise(
+        self,
+        parent: ResearchRecord,
+        problem: str,
+        *,
+        failed_checks: tuple[str, ...],
+        revision_index: int,
+    ) -> ResearchRecord:
+        parent_id = parent.hypothesis.hypothesis_id
+        request_id = f"concept-revision:{parent_id}:{revision_index}"
+        qualitative_failures = tuple(
+            QUALITATIVE_GATE_FEEDBACK.get(
+                check,
+                "A reviewer identified an unresolved conceptual weakness.",
+            )
+            for check in failed_checks
+        )
+        qualitative_parent = {
+            "hypothesis": asdict(parent.hypothesis),
+            "theory": {
+                key: value
+                for key, value in asdict(parent.theory).items()
+                if key != "soundness_score"
+            },
+            "falsification": {
+                key: value
+                for key, value in asdict(parent.falsification).items()
+                if key != "robustness_score"
+            },
+            "experiment": asdict(parent.experiment),
+            "novelty": {
+                key: value
+                for key, value in asdict(parent.novelty).items()
+                if key != "novelty_score"
+            },
+        }
+        payload = self.model.complete(
+            role="concept-reviser",
+            system=(
+                "Revise the scientific mechanism, not its scores or wording. Address the "
+                "reviewed technical failures with a materially changed, falsifiable claim. "
+                "Do not write code, lower standards, hide assumptions, or propose a "
+                "hyperparameter-only variant."
+            ),
+            prompt=(
+                f"Problem:\n{problem}\n\nFailed gate checks:\n"
+                f"{json.dumps(qualitative_failures)}\n\nReviewed parent record:\n"
+                f"{json.dumps(qualitative_parent, sort_keys=True)}"
+            ),
+            schema=HYPOTHESIS_SCHEMA,
+            request_id=request_id,
+        )
+        try:
+            hypothesis = self._hypothesis(payload)
+            if hypothesis.hypothesis_id == parent_id:
+                raise ValueError("conceptual revision must materially change the hypothesis")
+            if hypothesis.family != parent.hypothesis.family:
+                raise ValueError("conceptual revision must preserve the parent family")
+        except Exception as exc:
+            self._reject(request_id, exc)
+            raise
+        self._accept(request_id)
+        revised = ResearchRecord(
+            hypothesis=hypothesis,
+            provenance=[
+                {
+                    "role": "concept-reviser",
+                    "action": "revised",
+                    "request_id": request_id,
+                    "parent_hypothesis_id": parent_id,
+                }
+            ],
+        )
+        audit_request_id = (
+            f"concept-revision-audit:{parent_id}:{hypothesis.hypothesis_id}"
+        )
+        audit_payload = self.model.complete(
+            role="concept-revision-auditor",
+            system=(
+                "Audit lineage independently. Approve only if the child preserves the "
+                "parent research objective, changes the mechanism substantively rather than "
+                "cosmetically, and directly addresses the qualitative reviewed failure. "
+                "Do not infer quality from numeric scores."
+            ),
+            prompt=(
+                f"Problem:\n{problem}\n\nQualitative failed checks:\n"
+                f"{json.dumps(qualitative_failures)}\n\nParent hypothesis:\n"
+                f"{json.dumps(asdict(parent.hypothesis), sort_keys=True)}\n\n"
+                f"Child hypothesis:\n"
+                f"{json.dumps(asdict(hypothesis), sort_keys=True)}"
+            ),
+            schema=REVISION_AUDIT_SCHEMA,
+            request_id=audit_request_id,
+        )
+        try:
+            revised.revision_audit = RevisionAudit(**audit_payload)
+            revised.revision_audit.validate()
+        except Exception as exc:
+            revised.revision_audit = None
+            self._reject(audit_request_id, exc)
+            raise
+        self._accept(audit_request_id)
+        revised.provenance.append(
+            {
+                "role": "concept-revision-auditor",
+                "action": "audited",
+                "request_id": audit_request_id,
+                "parent_hypothesis_id": parent_id,
+            }
+        )
+        return revised
 
     def review(
         self,

@@ -10,6 +10,7 @@ class FakeStructuredModel:
         self.roles = []
         self.accepted = []
         self.rejected = []
+        self.prompts = {}
 
     def accept_response(self, request_id):
         self.accepted.append(request_id)
@@ -18,13 +19,42 @@ class FakeStructuredModel:
         self.rejected.append((request_id, reason))
 
     def complete(self, *, role, system, prompt, schema, request_id=None):
-        del system, prompt, schema, request_id
+        del system, schema, request_id
         self.roles.append(role)
-        if role.startswith("hypothesis-generator"):
+        self.prompts[role] = prompt
+        if role == "concept-revision-auditor":
             return {
-                "title": "Conditional control variates for teammate drift",
-                "family": role.split(":", 1)[1],
-                "mechanism": "Estimate stationary action-conditioned residuals and remove drift variance.",
+                "preserves_objective": True,
+                "substantive_mechanism_change": True,
+                "addresses_reviewed_failure": True,
+                "objective_analysis": (
+                    "Both hypotheses target lower-error replay under changing teammate policies."
+                ),
+                "mechanism_analysis": (
+                    "The child adds a support fallback to the conditional residual mechanism."
+                ),
+                "failure_resolution_analysis": (
+                    "The explicit fallback addresses missing target-relevant action strata."
+                ),
+            }
+        if role.startswith("hypothesis-generator") or role == "concept-reviser":
+            family = (
+                role.split(":", 1)[1]
+                if role.startswith("hypothesis-generator")
+                else "statistics"
+            )
+            return {
+                "title": (
+                    "Conditional control variates for teammate drift"
+                    if role.startswith("hypothesis-generator")
+                    else "Support-aware conditional controls for teammate drift"
+                ),
+                "family": family,
+                "mechanism": (
+                    "Estimate stationary action-conditioned residuals and remove drift variance."
+                    if role.startswith("hypothesis-generator")
+                    else "Combine conditional residual controls with an explicit support fallback."
+                ),
                 "formal_claim": "A conditionally centered control variate lowers target-backup variance.",
                 "assumptions": ["Finite teammate actions", "Stationary conditional dynamics"],
                 "predictions": ["Lower MSE under drift", "No loss when behavior equals target"],
@@ -141,6 +171,47 @@ class ResearchCouncilTest(unittest.TestCase):
         self.assertEqual(model.roles.count("falsifier"), 1)
         self.assertEqual(model.roles.count("experimentalist"), 1)
         self.assertEqual(model.roles.count("novelty-reviewer"), 1)
+
+    def test_concept_revision_has_parent_lineage_and_a_distinct_stable_id(self):
+        model = FakeStructuredModel()
+        council = ResearchCouncil(model)
+        parent = council.generate(
+            "Off-policy teammate drift",
+            lenses=(ResearchLens("statistics", "derive estimator"),),
+        )[0]
+        parent = council.review(parent, "Off-policy teammate drift")
+
+        revised = council.revise(
+            parent,
+            "Off-policy teammate drift",
+            failed_checks=("novelty_score",),
+            revision_index=0,
+        )
+
+        self.assertNotEqual(
+            revised.hypothesis.hypothesis_id,
+            parent.hypothesis.hypothesis_id,
+        )
+        self.assertEqual(
+            revised.provenance[0]["parent_hypothesis_id"],
+            parent.hypothesis.hypothesis_id,
+        )
+        self.assertIn(
+            f"concept-revision:{parent.hypothesis.hypothesis_id}:0",
+            model.accepted,
+        )
+        self.assertTrue(revised.revision_audit.preserves_objective)
+        self.assertNotIn("soundness_score", model.prompts["concept-reviser"])
+        self.assertNotIn("robustness_score", model.prompts["concept-reviser"])
+        self.assertNotIn("novelty_score", model.prompts["concept-reviser"])
+        self.assertIn(
+            (
+                "concept-revision-audit:"
+                f"{parent.hypothesis.hypothesis_id}:"
+                f"{revised.hypothesis.hypothesis_id}"
+            ),
+            model.accepted,
+        )
 
 
 if __name__ == "__main__":
