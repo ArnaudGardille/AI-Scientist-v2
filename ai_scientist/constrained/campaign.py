@@ -128,8 +128,8 @@ class HierarchicalCampaign:
             parent_context = (
                 "\nParent implementation:\n"
                 + json.dumps(parent.bundle.files, sort_keys=True)
-                + "\nFrozen numeric results:\n"
-                + json.dumps(parent.evaluation.stage_results, sort_keys=True)
+                + "\nRedacted adaptive-search diagnostics:\n"
+                + json.dumps(parent.evaluation.designer_feedback(), sort_keys=True)
             )
         payload = self.model.complete(
             role="method-designer",
@@ -195,6 +195,11 @@ class HierarchicalCampaign:
         best = self.best_node()
         payload = {
             "best_node_id": best.node_id if best else None,
+            "accepted": bool(
+                best
+                and best.final_evaluation is not None
+                and best.final_evaluation.complete
+            ),
             "nodes": [
                 {
                     "node_id": node.node_id,
@@ -205,6 +210,9 @@ class HierarchicalCampaign:
                     "priority": node.evaluation.priority(),
                     "final_priority": (
                         node.final_evaluation.priority() if node.final_evaluation else None
+                    ),
+                    "final_status": (
+                        node.final_evaluation.status if node.final_evaluation else None
                     ),
                 }
                 for node in self.nodes

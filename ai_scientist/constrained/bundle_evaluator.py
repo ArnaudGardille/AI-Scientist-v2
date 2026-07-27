@@ -56,6 +56,51 @@ class BundleEvaluation:
         scores = [float(value["primary_score"]) for value in self.stage_results.values()]
         return 1000.0 * self.passed_stages + sum(scores)
 
+    def designer_feedback(self) -> dict:
+        """Return adaptive-search diagnostics without private benchmark answers."""
+        stage_keys = {
+            "status",
+            "metric_direction",
+            "primary_score",
+            "aggregate_mse",
+            "robust_risk",
+            "worst_mse",
+            "buckets",
+            "raw_score",
+            "support_gate_failures",
+        }
+        scenario_keys = {
+            "support_gate",
+            "mse",
+            "variance",
+            "sample_size",
+            "trials",
+            "mean_utility_delta",
+            "utility_sem",
+            "lower_confidence_bound",
+            "lower_screening_bound",
+        }
+        stages = {}
+        for name, payload in self.stage_results.items():
+            summary = {key: payload[key] for key in stage_keys if key in payload}
+            scenarios = payload.get("scenarios")
+            if isinstance(scenarios, dict):
+                summary["scenarios"] = {
+                    scenario: {
+                        key: value[key]
+                        for key in scenario_keys
+                        if key in value
+                    }
+                    for scenario, value in scenarios.items()
+                }
+            stages[name] = summary
+        return {
+            "status": self.status,
+            "passed_stages": self.passed_stages,
+            "complete": self.complete,
+            "stages": stages,
+        }
+
 
 class WorktreeBundleEvaluator:
     def __init__(self, config: BundleEvaluatorConfig) -> None:
